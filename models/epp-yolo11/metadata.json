@@ -1,0 +1,1 @@
+{"name":"YOLO11 EPP 8 clases","task":"detect","inputSize":640,"personClass":0,"classes":["Person","Hardhat","Safety Vest","Safety Glasses","Gloves","Safety Boots","Regular Glasses","Regular Shoes"],"requiredDefaults":[1,2,3,4,5],"zones":{"1":[0.0,0.35],"2":[0.2,0.75],"3":[0.0,0.35],"4":[0.2,0.85],"5":[0.65,1.0],"6":[0.0,0.35],"7":[0.65,1.0]}}

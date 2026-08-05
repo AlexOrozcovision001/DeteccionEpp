@@ -1,0 +1,4 @@
+ultralytics
+onnx
+onnxsim
+opencv-python
