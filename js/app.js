@@ -2,6 +2,8 @@ const $ = id => document.getElementById(id);
 const video = $('video');
 const canvas = $('canvas');
 const ctx = canvas.getContext('2d');
+const imageCanvas = $('imageCanvas');
+const imageCtx = imageCanvas.getContext('2d');
 
 let session = null;
 let metadata = null;
@@ -34,16 +36,16 @@ const state = {
   skip: 2,
   required: new Set(),
   visible: new Set(),
-  personPersistence: 18,
-  eppPersistence: 10,
-  smoothingPerson: 0.58,
-  smoothingEpp: 0.46,
+  personPersistence: 30,
+  eppPersistence: 20,
+  smoothingPerson: 0.34,
+  smoothingEpp: 0.30,
   roi: null, // normalizado: {x1,y1,x2,y2}
   roiSelecting: false,
-  eppOnThreshold: 0.48,
-  eppOffThreshold: 0.22,
-  eppGain: 0.30,
-  eppDecay: 0.075
+  eppOnThreshold: 0.36,
+  eppOffThreshold: 0.14,
+  eppGain: 0.22,
+  eppDecay: 0.035
 };
 
 const colors = [
@@ -158,6 +160,31 @@ function resetTracking() {
   nextTrackId = 1;
 }
 
+function ensureCanvasSize(width, height) {
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+}
+
+function showVideoLayer() {
+  video.classList.remove('hidden');
+  imageCanvas.classList.add('hidden');
+}
+
+function showImageLayer() {
+  video.classList.add('hidden');
+  imageCanvas.classList.remove('hidden');
+}
+
+function drawImageLayer() {
+  if (!imageBitmap) return;
+  imageCanvas.width = imageBitmap.width;
+  imageCanvas.height = imageBitmap.height;
+  imageCtx.clearRect(0, 0, imageCanvas.width, imageCanvas.height);
+  imageCtx.drawImage(imageBitmap, 0, 0, imageCanvas.width, imageCanvas.height);
+}
+
 function syncStageAspect() {
   const [w, h] = sourceDimensions();
   if (w && h) $('stage').style.aspectRatio = `${w} / ${h}`;
@@ -178,6 +205,7 @@ async function startCamera() {
   video.controls = false;
   await video.play();
   sourceType = 'video';
+  showVideoLayer();
   running = true;
   $('sourceLabel').textContent = 'Cámara';
   syncStageAspect();
@@ -193,6 +221,7 @@ function openVideo(file) {
   video.onloadeddata = () => {
     video.play();
     sourceType = 'video';
+    showVideoLayer();
     running = true;
     $('sourceLabel').textContent = file.name;
     syncStageAspect();
@@ -204,6 +233,8 @@ async function openImage(file) {
   stopSource(false);
   imageBitmap = await createImageBitmap(file);
   sourceType = 'image';
+  showImageLayer();
+  drawImageLayer();
   running = true;
   $('sourceLabel').textContent = file.name;
   syncStageAspect();
@@ -224,6 +255,8 @@ function stopSource(clearRoi = false) {
   imageBitmap = null;
   sourceType = 'none';
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  imageCtx.clearRect(0, 0, imageCanvas.width, imageCanvas.height);
+  showVideoLayer();
   $('detectionCount').textContent = '0';
   $('persons').innerHTML = '<p class="empty">No se han detectado personas.</p>';
   $('globalCompliance').textContent = 'SIN EVALUAR';
@@ -286,8 +319,7 @@ async function infer() {
   const [sourceWidth, sourceHeight] = sourceDimensions();
   if (!sourceWidth || !sourceHeight) return [];
 
-  canvas.width = sourceWidth;
-  canvas.height = sourceHeight;
+  ensureCanvasSize(sourceWidth, sourceHeight);
 
   const crop = roiPixels(sourceWidth, sourceHeight);
   const size = metadata.inputSize || 640;
@@ -661,25 +693,20 @@ function drawDetectionBox(box, color, label, lineWidth = 3, alpha = 1) {
   ctx.restore();
 }
 
-function render(boxes = lastBoxes) {
+function render(boxes = lastBoxes, people = lastPeople) {
   const [width, height] = sourceDimensions();
   if (!width || !height) return;
 
-  canvas.width = width;
-  canvas.height = height;
-  drawSource(width, height);
+  ensureCanvasSize(width, height);
+  ctx.clearRect(0, 0, width, height);
 
-  const people = associate(boxes);
-  lastPeople = people;
   const personMap = new Map(people.map(person => [person.box.trackId || person.id, person]));
 
   for (const box of boxes) {
     if (box[5] === metadata.personClass || !state.visible.has(box[5])) continue;
     const className = metadata.classes[box[5]];
-    const stale = box.missed || 0;
-    const alpha = Math.max(0.35, 1 - stale / (state.eppPersistence + 2));
     const label = `${className} ${(box[4] * 100).toFixed(0)}%`;
-    drawDetectionBox(box, colors[box[5] % colors.length], label, Math.max(2, width / 520), alpha);
+    drawDetectionBox(box, colors[box[5] % colors.length], label, Math.max(2, width / 520), 1);
   }
 
   for (const box of boxes) {
@@ -687,10 +714,8 @@ function render(boxes = lastBoxes) {
     const person = personMap.get(box.trackId) || people.find(p => p.id === box.trackId);
     const color = person?.ok ? '#22d47b' : '#ff5d67';
     const status = person?.ok ? 'CUMPLE' : 'NO CUMPLE';
-    const stale = box.missed || 0;
-    const alpha = Math.max(0.45, 1 - stale / (state.personPersistence + 2));
     const label = `Persona ${person?.id || box.trackId || ''} · ${status} · ${(box[4] * 100).toFixed(0)}%`;
-    drawDetectionBox(box, color, label, Math.max(3, width / 420), alpha);
+    drawDetectionBox(box, color, label, Math.max(3, width / 420), 1);
   }
 
   drawRoi(width, height);
@@ -737,32 +762,33 @@ function renderCompliance(people) {
   $('globalCompliance').className = `compliance ${allComply ? 'pass' : 'fail'}`;
 }
 
+function persistReportSession() {
+  try {
+    const compact = sessionLog.slice(-2000);
+    localStorage.setItem('eppSessionLog', JSON.stringify(compact));
+    localStorage.setItem('eppReportStartedAt', reportStartedAt.toISOString());
+  } catch (error) {
+    console.warn('No se pudo persistir el reporte en el navegador:', error);
+  }
+}
+
 function updateReportStats(people) {
+  const nowMs = Date.now();
+  if (nowMs - lastReportSampleAt < 1000) return;
+  lastReportSampleAt = nowMs;
   const now = new Date();
+
   for (const person of people) {
     let stat = personStats.get(person.id);
     if (!stat) {
-      stat = {
-        id: person.id,
-        firstSeen: now.toISOString(),
-        lastSeen: now.toISOString(),
-        samples: 0,
-        compliantSamples: 0,
-        nonCompliantSamples: 0
-      };
+      stat = { id: person.id, firstSeen: now.toISOString(), lastSeen: now.toISOString(), samples: 0, compliantSamples: 0, nonCompliantSamples: 0 };
       personStats.set(person.id, stat);
     }
     stat.lastSeen = now.toISOString();
     stat.samples += 1;
     if (person.ok) stat.compliantSamples += 1;
     else stat.nonCompliantSamples += 1;
-  }
 
-  const nowMs = Date.now();
-  if (nowMs - lastReportSampleAt < 1000) return;
-  lastReportSampleAt = nowMs;
-
-  for (const person of people) {
     sessionLog.push({
       timestamp: now.toISOString(),
       source: $('sourceLabel').textContent,
@@ -776,16 +802,27 @@ function updateReportStats(people) {
       roi: state.roi ? { ...state.roi } : null
     });
   }
-  $('reportEventsBadge').textContent = `${sessionLog.length} registros`;
+
+  if (!people.length) {
+    sessionLog.push({
+      timestamp: now.toISOString(), source: $('sourceLabel').textContent, personId: '', compliance: 'SIN PERSONAS',
+      detected: [], missing: [], fps: Number(currentFps.toFixed(1)), latencyMs: Number(lastLatencyMs.toFixed(1)),
+      detections: lastBoxes.length, roi: state.roi ? { ...state.roi } : null
+    });
+  }
+
+  $('reportEventsBadge').textContent = `Registro automático · ${sessionLog.length}`;
+  $('reportEventsBadge').className = 'badge pass';
+  $('lastRecordLabel').textContent = `Último registro: ${now.toLocaleTimeString()}.`;
+  persistReportSession();
 }
 
 async function processCurrentFrame() {
   if (!session) {
     const [width, height] = sourceDimensions();
     if (width && height) {
-      canvas.width = width;
-      canvas.height = height;
-      drawSource(width, height);
+      ensureCanvasSize(width, height);
+      ctx.clearRect(0, 0, width, height);
       drawRoi(width, height);
     }
     return;
@@ -793,7 +830,8 @@ async function processCurrentFrame() {
 
   const detections = await infer();
   lastBoxes = updateTracks(detections);
-  render(lastBoxes);
+  lastPeople = associate(lastBoxes);
+  render(lastBoxes, lastPeople);
   updateReportStats(lastPeople);
 }
 
@@ -805,10 +843,11 @@ async function loop() {
     if (session && frameNo % state.skip === 0) {
       const detections = await infer();
       lastBoxes = updateTracks(detections);
-      render(lastBoxes);
+      lastPeople = associate(lastBoxes);
+      render(lastBoxes, lastPeople);
       updateReportStats(lastPeople);
     } else {
-      render(lastBoxes);
+      render(lastBoxes, lastPeople);
     }
   } catch (error) {
     console.error(error);
@@ -839,6 +878,15 @@ function canvasPoint(event) {
   };
 }
 
+function updateRoiUi() {
+  const active = Boolean(state.roi);
+  $('roiBtn').classList.toggle('roi-active', active);
+  $('roiBtn').textContent = active ? 'Cambiar ROI' : 'Seleccionar ROI';
+  $('roiStatus').textContent = active ? 'ROI: ACTIVO' : 'ROI: COMPLETO';
+  $('roiStatus').classList.toggle('active', active);
+  canvas.classList.toggle('roi-selecting', state.roiSelecting);
+}
+
 function beginRoiSelection() {
   const [w, h] = sourceDimensions();
   if (!w || !h) {
@@ -848,14 +896,15 @@ function beginRoiSelection() {
   state.roiSelecting = true;
   roiDraft = null;
   $('roiHint').classList.remove('hidden');
-  $('roiBtn').classList.add('primary');
+  canvas.classList.add('roi-selecting');
   setStatus('Modo ROI activo: arrastre sobre la imagen para definir la zona de detección.');
 }
 
 function finishRoiSelection() {
   state.roiSelecting = false;
   $('roiHint').classList.add('hidden');
-  $('roiBtn').classList.remove('primary');
+  canvas.classList.remove('roi-selecting');
+  updateRoiUi();
 }
 
 canvas.addEventListener('pointerdown', event => {
@@ -897,7 +946,9 @@ canvas.addEventListener('pointerup', event => {
       x2: Math.max(draft.x1, draft.x2), y2: Math.max(draft.y1, draft.y2)
     };
     resetTracking();
-    setStatus('ROI aplicado. Solo se procesará la zona marcada en azul.');
+    updateRoiUi();
+    render(lastBoxes, lastPeople);
+    setStatus('ROI aplicado. La zona azul permanecerá marcada y solo esa región será analizada.');
   } else {
     setStatus('ROI demasiado pequeño. Intente nuevamente.');
   }
@@ -911,6 +962,8 @@ function clearRoi() {
   roiDraft = null;
   finishRoiSelection();
   resetTracking();
+  updateRoiUi();
+  render(lastBoxes, lastPeople);
   setStatus('ROI eliminado. Se procesará la imagen completa.');
   if (sourceType === 'image') processCurrentFrame();
 }
@@ -967,7 +1020,8 @@ function downloadBlob(filename, content, type) {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  setStatus(`Archivo generado: ${filename}`);
 }
 
 function csvCell(value) {
@@ -1023,7 +1077,10 @@ function clearReport() {
   personStats.clear();
   reportStartedAt = new Date();
   lastReportSampleAt = 0;
-  $('reportEventsBadge').textContent = '0 registros';
+  $('reportEventsBadge').textContent = 'Registro automático · 0';
+  $('lastRecordLabel').textContent = 'Aún sin muestras.';
+  localStorage.removeItem('eppSessionLog');
+  localStorage.removeItem('eppReportStartedAt');
   setStatus('Registros del reporte reiniciados.');
 }
 
@@ -1105,5 +1162,24 @@ $('clearReportBtn').onclick = clearReport;
 $('sendThingSpeakBtn').onclick = sendThingSpeak;
 $('thingSpeakInterval').onchange = configureThingSpeakTimer;
 $('thingSpeakKey').value = localStorage.getItem('eppThingSpeakKey') || '';
+
+
+function restoreReportSession() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('eppSessionLog') || '[]');
+    if (Array.isArray(saved) && saved.length) {
+      sessionLog.push(...saved);
+      $('reportEventsBadge').textContent = `Registro automático · ${sessionLog.length}`;
+      $('lastRecordLabel').textContent = `Se restauraron ${sessionLog.length} registros del navegador.`;
+    }
+    const started = localStorage.getItem('eppReportStartedAt');
+    if (started) reportStartedAt = new Date(started);
+  } catch (error) {
+    console.warn('No se pudo restaurar el reporte:', error);
+  }
+}
+
+restoreReportSession();
+updateRoiUi();
 
 loadMetadata().catch(error => setStatus(error.message));
