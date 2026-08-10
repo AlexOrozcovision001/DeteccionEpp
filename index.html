@@ -35,10 +35,11 @@
     <section class="viewer-panel">
       <div id="stage">
         <video id="video" muted playsinline></video>
-        <canvas id="canvas"></canvas>
+        <canvas id="imageCanvas" class="media-canvas hidden"></canvas>
+        <canvas id="canvas" class="overlay-canvas"></canvas>
         <div class="hud">
           <span id="sourceLabel">Sin fuente</span>
-          <span id="fpsLabel">0 FPS</span>
+          <span class="hud-right"><span id="roiStatus" class="roi-status">ROI: COMPLETO</span><span id="fpsLabel">0 FPS</span></span>
         </div>
         <div id="roiHint" class="roi-hint hidden">Arrastre sobre el video para definir el ROI</div>
       </div>
@@ -81,13 +82,14 @@
     <section class="card report-card">
       <div class="section-title">
         <h2>Reporte de monitoreo</h2>
-        <span id="reportEventsBadge" class="badge neutral">0 registros</span>
+        <span id="reportEventsBadge" class="badge pass">Registro automático · 0</span>
       </div>
       <div class="report-fields">
         <div class="field"><label>Proyecto / obra</label><input id="reportProject" type="text" placeholder="Ej. Obra Riobamba"></div>
         <div class="field"><label>Área / frente de trabajo</label><input id="reportArea" type="text" placeholder="Ej. Frente A"></div>
         <div class="field"><label>Responsable</label><input id="reportOwner" type="text" placeholder="Nombre del responsable"></div>
       </div>
+      <p class="hint report-live"><b>Registro automático:</b> se guarda una muestra por segundo mientras la cámara/video/imagen está siendo analizada. <span id="lastRecordLabel">Aún sin muestras.</span></p>
       <div class="row-actions">
         <button id="downloadCsvBtn" class="primary">Descargar CSV</button>
         <button id="downloadJsonBtn">Descargar JSON</button>
