@@ -3,9 +3,10 @@
 @media print{body{background:white;color:#111}header,.instructions-shell,main.dashboard{display:none!important}.print-report{display:block!important;padding:24px;font-family:Arial,sans-serif;color:#111}.print-report h1,.print-report h2{color:#111}.print-report table{width:100%;border-collapse:collapse;margin-top:12px}.print-report th,.print-report td{border:1px solid #999;padding:6px;text-align:left;font-size:12px}.print-report .summary-box{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.print-report .summary-box div{border:1px solid #bbb;padding:10px}.print-report .small{font-size:11px;color:#555}}
 
 /* v4: overlay estable, ROI persistente y estado de registro */
-#stage video,#stage .media-canvas,#stage .overlay-canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+#stage video,#stage .media-canvas,#stage .overlay-canvas,#stage .roi-canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
 #stage .media-canvas{z-index:1;background:#000}
 #stage video{z-index:1}
-#stage .overlay-canvas{z-index:3;background:transparent;pointer-events:auto;touch-action:none;cursor:default}
-#stage .overlay-canvas.roi-selecting{cursor:crosshair}
+#stage .overlay-canvas{z-index:3;background:transparent;pointer-events:none}
+#stage .roi-canvas{z-index:4;background:transparent;pointer-events:none;touch-action:none}
+#stage .roi-canvas.roi-selecting{pointer-events:auto;cursor:crosshair}
 .hud{z-index:5}.roi-hint{z-index:6}.hud-right{display:flex;align-items:center;gap:12px}.roi-status{font-size:.72rem;padding:4px 8px;border-radius:999px;background:#293c50;color:#cad7e3}.roi-status.active{background:#123f51;color:#65eaff;border:1px solid #18d4ff}.roi-active{background:#123f51!important;color:#65eaff!important;border-color:#18d4ff!important;box-shadow:0 0 0 2px rgba(24,212,255,.15) inset}.report-live{margin:6px 0 2px}.report-live b{color:var(--green)}
