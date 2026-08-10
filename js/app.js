@@ -2,6 +2,8 @@ const $ = id => document.getElementById(id);
 const video = $('video');
 const canvas = $('canvas');
 const ctx = canvas.getContext('2d');
+const roiCanvas = $('roiCanvas');
+const roiCtx = roiCanvas.getContext('2d');
 const imageCanvas = $('imageCanvas');
 const imageCtx = imageCanvas.getContext('2d');
 
@@ -25,6 +27,9 @@ let roiPointerStart = null;
 let iotTimer = null;
 let reportStartedAt = new Date();
 let lastReportSampleAt = 0;
+let inferenceBusy = false;
+let renderLoopActive = false;
+let inferenceLoopActive = false;
 
 const sessionLog = [];
 const personStats = new Map();
@@ -38,6 +43,8 @@ const state = {
   visible: new Set(),
   personPersistence: 30,
   eppPersistence: 20,
+  personHoldMs: 2600,
+  eppHoldMs: 1800,
   smoothingPerson: 0.34,
   smoothingEpp: 0.30,
   roi: null, // normalizado: {x1,y1,x2,y2}
@@ -161,10 +168,18 @@ function resetTracking() {
 }
 
 function ensureCanvasSize(width, height) {
+  let changed = false;
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
+    changed = true;
   }
+  if (roiCanvas.width !== width || roiCanvas.height !== height) {
+    roiCanvas.width = width;
+    roiCanvas.height = height;
+    changed = true;
+  }
+  if (changed) drawRoi(width, height);
 }
 
 function showVideoLayer() {
@@ -209,7 +224,7 @@ async function startCamera() {
   running = true;
   $('sourceLabel').textContent = 'Cámara';
   syncStageAspect();
-  loop();
+  startProcessingLoops();
 }
 
 function openVideo(file) {
@@ -225,7 +240,7 @@ function openVideo(file) {
     running = true;
     $('sourceLabel').textContent = file.name;
     syncStageAspect();
-    loop();
+    startProcessingLoops();
   };
 }
 
@@ -255,6 +270,7 @@ function stopSource(clearRoi = false) {
   imageBitmap = null;
   sourceType = 'none';
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  roiCtx.clearRect(0, 0, roiCanvas.width, roiCanvas.height);
   imageCtx.clearRect(0, 0, imageCanvas.width, imageCanvas.height);
   showVideoLayer();
   $('detectionCount').textContent = '0';
@@ -295,26 +311,35 @@ function roiPixels(width, height, roi = state.roi) {
 }
 
 function drawRoi(width, height) {
+  if (!width || !height) return;
+  roiCtx.clearRect(0, 0, width, height);
   const roi = roiDraft || state.roi;
   if (!roi) return;
   const r = roiPixels(width, height, roi);
-  ctx.save();
-  ctx.fillStyle = 'rgba(0,0,0,.42)';
-  ctx.fillRect(0, 0, width, r.y);
-  ctx.fillRect(0, r.y + r.height, width, height - r.y - r.height);
-  ctx.fillRect(0, r.y, r.x, r.height);
-  ctx.fillRect(r.x + r.width, r.y, width - r.x - r.width, r.height);
-  ctx.setLineDash([12, 8]);
-  ctx.lineWidth = Math.max(3, width / 480);
-  ctx.strokeStyle = '#18d4ff';
-  ctx.strokeRect(r.x, r.y, r.width, r.height);
-  ctx.setLineDash([]);
-  ctx.font = `700 ${Math.max(14, width / 65)}px system-ui`;
-  ctx.fillStyle = '#18d4ff';
-  ctx.fillText('ROI · Zona de detección', r.x + 8, Math.max(22, r.y + 22));
-  ctx.restore();
+  roiCtx.save();
+  roiCtx.fillStyle = 'rgba(0,0,0,.38)';
+  roiCtx.fillRect(0, 0, width, r.y);
+  roiCtx.fillRect(0, r.y + r.height, width, height - r.y - r.height);
+  roiCtx.fillRect(0, r.y, r.x, r.height);
+  roiCtx.fillRect(r.x + r.width, r.y, width - r.x - r.width, r.height);
+  roiCtx.setLineDash([12, 8]);
+  roiCtx.lineWidth = Math.max(3, width / 480);
+  roiCtx.strokeStyle = '#18d4ff';
+  roiCtx.shadowColor = '#18d4ff';
+  roiCtx.shadowBlur = 8;
+  roiCtx.strokeRect(r.x, r.y, r.width, r.height);
+  roiCtx.shadowBlur = 0;
+  roiCtx.setLineDash([]);
+  roiCtx.font = `700 ${Math.max(14, width / 65)}px system-ui`;
+  const text = 'ROI · Zona de detección';
+  const tw = roiCtx.measureText(text).width;
+  const ty = Math.max(26, r.y + 26);
+  roiCtx.fillStyle = 'rgba(7,17,31,.92)';
+  roiCtx.fillRect(r.x + 4, ty - 21, tw + 16, 28);
+  roiCtx.fillStyle = '#18d4ff';
+  roiCtx.fillText(text, r.x + 12, ty);
+  roiCtx.restore();
 }
-
 async function infer() {
   const [sourceWidth, sourceHeight] = sourceDimensions();
   if (!sourceWidth || !sourceHeight) return [];
@@ -559,9 +584,10 @@ function updateTracks(detections) {
     });
   }
 
+  const trackNow = performance.now();
   tracks = tracks.filter(track => {
-    const maxMissed = track.classId === metadata.personClass ? state.personPersistence : state.eppPersistence;
-    return track.missed <= maxMissed;
+    const holdMs = track.classId === metadata.personClass ? state.personHoldMs : state.eppHoldMs;
+    return (trackNow - track.lastSeen) <= holdMs;
   });
 
   return tracks.map(track => {
@@ -693,7 +719,7 @@ function drawDetectionBox(box, color, label, lineWidth = 3, alpha = 1) {
   ctx.restore();
 }
 
-function render(boxes = lastBoxes, people = lastPeople) {
+function render(boxes = lastBoxes, people = lastPeople, updateUi = true) {
   const [width, height] = sourceDimensions();
   if (!width || !height) return;
 
@@ -718,9 +744,10 @@ function render(boxes = lastBoxes, people = lastPeople) {
     drawDetectionBox(box, color, label, Math.max(3, width / 420), 1);
   }
 
-  drawRoi(width, height);
-  renderCompliance(people);
-  $('detectionCount').textContent = boxes.length;
+  if (updateUi) {
+    renderCompliance(people);
+    $('detectionCount').textContent = boxes.length;
+  }
 }
 
 function renderCompliance(people) {
@@ -835,26 +862,26 @@ async function processCurrentFrame() {
   updateReportStats(lastPeople);
 }
 
-async function loop() {
-  if (!running) return;
-  frameNo++;
+function startProcessingLoops() {
+  if (!renderLoopActive) {
+    renderLoopActive = true;
+    requestAnimationFrame(renderLoop);
+  }
+  if (!inferenceLoopActive) {
+    inferenceLoopActive = true;
+    inferenceLoop();
+  }
+}
 
-  try {
-    if (session && frameNo % state.skip === 0) {
-      const detections = await infer();
-      lastBoxes = updateTracks(detections);
-      lastPeople = associate(lastBoxes);
-      render(lastBoxes, lastPeople);
-      updateReportStats(lastPeople);
-    } else {
-      render(lastBoxes, lastPeople);
-    }
-  } catch (error) {
-    console.error(error);
-    setStatus(`Error de inferencia: ${error.message}`);
-    running = false;
+function renderLoop() {
+  if (!running) {
+    renderLoopActive = false;
     return;
   }
+
+  // El overlay se redibuja de forma independiente de ONNX. Aunque una inferencia
+  // tarde cientos de milisegundos, la última caja estable nunca se borra.
+  render(lastBoxes, lastPeople, false);
 
   fpsFrames++;
   const now = performance.now();
@@ -865,16 +892,51 @@ async function loop() {
     lastFpsAt = now;
   }
 
-  if (sourceType !== 'image') requestAnimationFrame(loop);
+  requestAnimationFrame(renderLoop);
+}
+
+async function inferenceLoop() {
+  if (!running) {
+    inferenceLoopActive = false;
+    return;
+  }
+
+  if (!session || inferenceBusy) {
+    setTimeout(inferenceLoop, 16);
+    return;
+  }
+
+  inferenceBusy = true;
+  try {
+    const detections = await infer();
+    lastBoxes = updateTracks(detections);
+    lastPeople = associate(lastBoxes);
+    // Actualizar paneles una sola vez por inferencia; el dibujo visual corre aparte.
+    render(lastBoxes, lastPeople, true);
+    updateReportStats(lastPeople);
+  } catch (error) {
+    console.error(error);
+    setStatus(`Error de inferencia: ${error.message}`);
+    running = false;
+    inferenceLoopActive = false;
+    inferenceBusy = false;
+    return;
+  }
+  inferenceBusy = false;
+
+  // "Procesar cada" ahora actúa como una pequeña pausa entre inferencias en lugar
+  // de apagar el overlay entre frames.
+  const delay = Math.max(0, (state.skip - 1) * 16);
+  setTimeout(inferenceLoop, delay);
 }
 
 function canvasPoint(event) {
-  const rect = canvas.getBoundingClientRect();
-  const x = (event.clientX - rect.left) * canvas.width / rect.width;
-  const y = (event.clientY - rect.top) * canvas.height / rect.height;
+  const rect = roiCanvas.getBoundingClientRect();
+  const x = (event.clientX - rect.left) * roiCanvas.width / rect.width;
+  const y = (event.clientY - rect.top) * roiCanvas.height / rect.height;
   return {
-    x: Math.max(0, Math.min(canvas.width, x)),
-    y: Math.max(0, Math.min(canvas.height, y))
+    x: Math.max(0, Math.min(roiCanvas.width, x)),
+    y: Math.max(0, Math.min(roiCanvas.height, y))
   };
 }
 
@@ -884,7 +946,7 @@ function updateRoiUi() {
   $('roiBtn').textContent = active ? 'Cambiar ROI' : 'Seleccionar ROI';
   $('roiStatus').textContent = active ? 'ROI: ACTIVO' : 'ROI: COMPLETO';
   $('roiStatus').classList.toggle('active', active);
-  canvas.classList.toggle('roi-selecting', state.roiSelecting);
+  roiCanvas.classList.toggle('roi-selecting', state.roiSelecting);
 }
 
 function beginRoiSelection() {
@@ -896,46 +958,47 @@ function beginRoiSelection() {
   state.roiSelecting = true;
   roiDraft = null;
   $('roiHint').classList.remove('hidden');
-  canvas.classList.add('roi-selecting');
+  updateRoiUi();
+  drawRoi(...sourceDimensions());
   setStatus('Modo ROI activo: arrastre sobre la imagen para definir la zona de detección.');
 }
 
 function finishRoiSelection() {
   state.roiSelecting = false;
   $('roiHint').classList.add('hidden');
-  canvas.classList.remove('roi-selecting');
   updateRoiUi();
+  drawRoi(...sourceDimensions());
 }
 
-canvas.addEventListener('pointerdown', event => {
+roiCanvas.addEventListener('pointerdown', event => {
   if (!state.roiSelecting) return;
   event.preventDefault();
-  canvas.setPointerCapture(event.pointerId);
+  roiCanvas.setPointerCapture(event.pointerId);
   const p = canvasPoint(event);
   roiPointerStart = p;
-  roiDraft = { x1: p.x / canvas.width, y1: p.y / canvas.height, x2: p.x / canvas.width, y2: p.y / canvas.height };
+  roiDraft = { x1: p.x / roiCanvas.width, y1: p.y / roiCanvas.height, x2: p.x / roiCanvas.width, y2: p.y / roiCanvas.height };
 });
 
-canvas.addEventListener('pointermove', event => {
+roiCanvas.addEventListener('pointermove', event => {
   if (!state.roiSelecting || !roiPointerStart) return;
   const p = canvasPoint(event);
   roiDraft = {
-    x1: roiPointerStart.x / canvas.width,
-    y1: roiPointerStart.y / canvas.height,
-    x2: p.x / canvas.width,
-    y2: p.y / canvas.height
+    x1: roiPointerStart.x / roiCanvas.width,
+    y1: roiPointerStart.y / roiCanvas.height,
+    x2: p.x / roiCanvas.width,
+    y2: p.y / roiCanvas.height
   };
-  render(lastBoxes);
+  drawRoi(...sourceDimensions());
 });
 
-canvas.addEventListener('pointerup', event => {
+roiCanvas.addEventListener('pointerup', event => {
   if (!state.roiSelecting || !roiPointerStart) return;
   const p = canvasPoint(event);
   const draft = {
-    x1: roiPointerStart.x / canvas.width,
-    y1: roiPointerStart.y / canvas.height,
-    x2: p.x / canvas.width,
-    y2: p.y / canvas.height
+    x1: roiPointerStart.x / roiCanvas.width,
+    y1: roiPointerStart.y / roiCanvas.height,
+    x2: p.x / roiCanvas.width,
+    y2: p.y / roiCanvas.height
   };
   roiPointerStart = null;
   const width = Math.abs(draft.x2 - draft.x1);
@@ -947,13 +1010,13 @@ canvas.addEventListener('pointerup', event => {
     };
     resetTracking();
     updateRoiUi();
-    render(lastBoxes, lastPeople);
     setStatus('ROI aplicado. La zona azul permanecerá marcada y solo esa región será analizada.');
   } else {
     setStatus('ROI demasiado pequeño. Intente nuevamente.');
   }
   roiDraft = null;
   finishRoiSelection();
+  drawRoi(...sourceDimensions());
   if (sourceType === 'image') processCurrentFrame();
 });
 
@@ -961,8 +1024,10 @@ function clearRoi() {
   state.roi = null;
   roiDraft = null;
   finishRoiSelection();
+  drawRoi(...sourceDimensions());
   resetTracking();
   updateRoiUi();
+  drawRoi(...sourceDimensions());
   render(lastBoxes, lastPeople);
   setStatus('ROI eliminado. Se procesará la imagen completa.');
   if (sourceType === 'image') processCurrentFrame();
