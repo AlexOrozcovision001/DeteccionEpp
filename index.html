@@ -21,7 +21,7 @@
   <details class="card instructions" open>
     <summary>Instrucciones de uso</summary>
     <ol>
-      <li><b>Cargue el modelo:</b> pulse <b>Cargar predeterminado</b> y espere a que el motor indique WebGPU o WASM.</li>
+      <li><b>Seleccione el modelo y resolución:</b> elija YOLO11s anterior, YOLO11s Dataset 15 o YOLO11m Dataset 15; después seleccione 640, 512 o 480 y pulse <b>Cargar modelo</b>.</li>
       <li><b>Seleccione los EPP obligatorios:</b> marque casco, chaleco, gafas, guantes, botas u otras clases que deban intervenir en el cumplimiento.</li>
       <li><b>Opcional — seleccione un ROI:</b> pulse <b>Seleccionar ROI</b> y arrastre un rectángulo sobre el área que desea vigilar. La IA ignorará el resto de la imagen.</li>
       <li><b>Seleccione la fuente:</b> cámara, video o imagen. Las personas reciben un ID de seguimiento y el estado de cumplimiento se estabiliza durante varios fotogramas.</li>
@@ -53,12 +53,12 @@
         <button id="clearRoiBtn">Quitar ROI</button>
         <button id="stopBtn">Detener</button>
       </div>
-      <p id="status">Primero pulse <b>Cargar predeterminado</b>. Luego seleccione cámara, video o imagen.</p>
+      <p id="status">Primero pulse <b>Cargar modelo</b>. Luego seleccione cámara, video o imagen.</p>
     </section>
 
     <section class="card configuration-card">
       <h2>Configuración de detección</h2>
-      <div class="configuration-grid">
+      <div class="configuration-grid performance-grid">
         <div class="field">
           <label>Confianza <output id="confOut">0.35</output></label>
           <input id="confRange" type="range" min="0.10" max="0.90" step="0.05" value="0.35">
@@ -67,17 +67,32 @@
           <label>IoU NMS <output id="iouOut">0.45</output></label>
           <input id="iouRange" type="range" min="0.10" max="0.90" step="0.05" value="0.45">
         </div>
+        <div class="field">
+          <label>Resolución de inferencia</label>
+          <select id="resolutionSelect">
+            <option value="640">640 × 640 · Máxima precisión</option>
+            <option value="512" selected>512 × 512 · Equilibrado</option>
+            <option value="480">480 × 480 · Más rápido</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Modo rendimiento</label>
+          <select id="performanceMode">
+            <option value="manual">Manual</option>
+            <option value="auto" selected>Automático</option>
+          </select>
+        </div>
         <div class="field frame-field">
           <label>Procesar cada</label>
           <select id="frameSkip">
-            <option value="1">1 frame</option>
-            <option value="2" selected>2 frames</option>
+            <option value="1" selected>1 frame</option>
+            <option value="2">2 frames</option>
             <option value="3">3 frames</option>
             <option value="4">4 frames</option>
           </select>
         </div>
       </div>
-      <p class="hint">Seguimiento temporal activo: las cajas y el estado de EPP se mantienen durante pérdidas breves de detección para evitar parpadeos.</p>
+      <p class="hint"><b>Modo automático:</b> intenta mantener buena fluidez cambiando entre 640, 512 y 480 según la latencia. Requiere los tres modelos ONNX. El tracker permanece activo entre inferencias para conservar las cajas.</p>
     </section>
 
     <section class="card report-card">
@@ -127,19 +142,24 @@
       <div class="field">
         <label>Modelo disponible</label>
         <select id="modelSelect">
-          <option value="models/epp-yolo11/model.onnx">YOLO11 EPP · 8 clases</option>
+          <option value="yolo11s_previous">YOLO11s · Modelo anterior</option>
+          <option value="yolo11s_dataset15" selected>YOLO11s · Dataset 15</option>
+          <option value="yolo11m_dataset15">YOLO11m · Dataset 15</option>
         </select>
       </div>
       <div class="row-actions">
-        <button id="loadDefaultBtn" class="primary">Cargar predeterminado</button>
+        <button id="loadDefaultBtn" class="primary">Cargar modelo</button>
         <label class="button">Cargar ONNX<input id="modelInput" type="file" accept=".onnx" hidden></label>
         <label class="button">Metadatos JSON<input id="metadataInput" type="file" accept=".json" hidden></label>
       </div>
       <div class="grid metrics">
         <div><span>Inferencia</span><b id="latency">—</b></div>
+        <div><span>Modelo activo</span><b id="activeModel">—</b></div>
+        <div><span>IA</span><b id="ips">0.0 IPS</b></div>
         <div><span>Detecciones</span><b id="detectionCount">0</b></div>
-        <div><span>Entrada</span><b id="inputSize">640×640</b></div>
+        <div><span>Entrada activa</span><b id="inputSize">—</b></div>
         <div><span>Proveedor</span><b id="provider">—</b></div>
+        <div><span>Tracker</span><b id="trackerStatus">ACTIVO</b></div>
       </div>
     </section>
 

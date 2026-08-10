@@ -42,3 +42,35 @@ models/epp-yolo11/metadata.json
 ## GitHub Pages
 
 Publicar desde la rama `main`, carpeta `/ (root)`.
+
+
+## Perfiles de rendimiento 640 / 512 / 480
+
+La aplicación v6 puede cambiar entre tres modelos ONNX estáticos. Un modelo exportado a 640 no se vuelve realmente más rápido solo porque el navegador redimensione la imagen; para reducir cómputo se necesitan exportaciones separadas.
+
+Desde la raíz del proyecto, con el entorno de Ultralytics activo:
+
+```bash
+python scripts/export_web_profiles.py --weights best.pt
+```
+
+Se crearán:
+
+```text
+models/epp-yolo11/model.onnx      # 640x640
+models/epp-yolo11/model_512.onnx  # 512x512
+models/epp-yolo11/model_480.onnx  # 480x480
+```
+
+La interfaz muestra FPS, latencia e IPS. En modo automático, si la latencia media es alta baja 640→512→480; si el dispositivo es muy rápido puede volver a subir la resolución. Si falta uno de los perfiles, el modo automático se detiene y la interfaz lo indica.
+
+
+## Catálogo multi-modelo
+
+La interfaz soporta tres entrenamientos y tres resoluciones por entrenamiento:
+
+- YOLO11s modelo anterior: 640, 512 y 480.
+- YOLO11s Dataset 15: 640, 512 y 480.
+- YOLO11m Dataset 15: 640, 512 y 480.
+
+Cada modelo se carga bajo demanda; abrir la página no descarga los nueve archivos ONNX.
