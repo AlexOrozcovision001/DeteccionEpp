@@ -1,41 +1,44 @@
 # Detección EPP en tiempo real
 
-Aplicación web estática para ejecutar un modelo YOLO de EPP en el navegador con ONNX Runtime Web.
+Aplicación web estática para detección de EPP con modelos YOLO exportados a ONNX y ejecutados directamente en el navegador mediante ONNX Runtime Web.
 
-## Clases
+## Funciones
 
-0 Person, 1 Hardhat, 2 Safety Vest, 3 Safety Glasses, 4 Gloves, 5 Safety Boots, 6 Regular Glasses, 7 Regular Shoes.
+- Cámara, video e imagen local.
+- WebGPU con respaldo WASM.
+- Detección de 8 clases de EPP.
+- Seguimiento temporal de personas con ID persistente.
+- Persistencia e histéresis de EPP para reducir el parpadeo de detecciones.
+- Selección interactiva de ROI (Region of Interest).
+- EPP obligatorios configurables y evaluación CUMPLE / NO CUMPLE por persona.
+- Reporte descargable en CSV y JSON.
+- Reporte imprimible / guardable como PDF desde el navegador.
+- Envío opcional de resumen a ThingSpeak mediante Write API Key ingresada por el usuario.
+- Carga local de modelos ONNX y metadatos JSON compatibles.
 
-## Preparación
+## Orden de uso recomendado
 
-GitHub Pages no ejecuta directamente archivos `.pt`. En Visual Studio Code:
+1. Pulsar **Cargar predeterminado**.
+2. Seleccionar los EPP obligatorios.
+3. Opcionalmente seleccionar un ROI.
+4. Iniciar cámara, abrir video o abrir imagen.
+5. Revisar IDs de personas y cumplimiento.
+6. Descargar el reporte o enviarlo a ThingSpeak.
 
-```bash
-python -m venv .venv
-# Windows
-.venv\Scripts\activate
-pip install ultralytics onnx onnxsim
-python scripts/export_onnx.py --weights best.pt --imgsz 640
-```
+## Modelo
 
-Primero pruebe la exportación sin `--nms`. Copie el ONNX generado como:
+GitHub Pages no ejecuta `.pt`. El modelo debe estar exportado a ONNX y ubicado en:
 
 ```text
 models/epp-yolo11/model.onnx
 ```
 
-También puede abrir la web y usar **Cargar ONNX**, sin subir el modelo a GitHub.
+Los metadatos están en:
 
-## Publicación
+```text
+models/epp-yolo11/metadata.json
+```
 
-1. Suba todos los archivos a la rama `main`.
-2. Abra `Settings > Pages`.
-3. Seleccione `Deploy from a branch`, `main` y `/root`.
-4. Abra la URL de GitHub Pages usando HTTPS para permitir la cámara.
+## GitHub Pages
 
-## Consideraciones
-
-- WebGPU se usa cuando está disponible; WASM funciona como respaldo.
-- Para más FPS, seleccione procesar cada 2, 3 o 4 frames.
-- El cumplimiento se evalúa por persona mediante asociación espacial y zonas anatómicas.
-- La comparación de precisión real entre modelos requiere un conjunto etiquetado; la web compara rendimiento visual y velocidad.
+Publicar desde la rama `main`, carpeta `/ (root)`.
