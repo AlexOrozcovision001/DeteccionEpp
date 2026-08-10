@@ -12,10 +12,23 @@
 <header>
   <div>
     <h1>DETECCIÓN INTELIGENTE DE EPP</h1>
-    <p>Evaluación de cumplimiento por persona · YOLO + ONNX Runtime Web</p>
+    <p>Seguimiento por persona · ROI · Cumplimiento · Reportes · YOLO + ONNX Runtime Web</p>
   </div>
   <div id="engineBadge" class="badge neutral">Motor: sin iniciar</div>
 </header>
+
+<section class="instructions-shell">
+  <details class="card instructions" open>
+    <summary>Instrucciones de uso</summary>
+    <ol>
+      <li><b>Cargue el modelo:</b> pulse <b>Cargar predeterminado</b> y espere a que el motor indique WebGPU o WASM.</li>
+      <li><b>Seleccione los EPP obligatorios:</b> marque casco, chaleco, gafas, guantes, botas u otras clases que deban intervenir en el cumplimiento.</li>
+      <li><b>Opcional — seleccione un ROI:</b> pulse <b>Seleccionar ROI</b> y arrastre un rectángulo sobre el área que desea vigilar. La IA ignorará el resto de la imagen.</li>
+      <li><b>Seleccione la fuente:</b> cámara, video o imagen. Las personas reciben un ID de seguimiento y el estado de cumplimiento se estabiliza durante varios fotogramas.</li>
+      <li><b>Genere el reporte:</b> complete los datos de sesión y descargue CSV/JSON, imprima a PDF o envíe un resumen a ThingSpeak.</li>
+    </ol>
+  </details>
+</section>
 
 <main class="dashboard">
   <div class="left-column">
@@ -27,15 +40,18 @@
           <span id="sourceLabel">Sin fuente</span>
           <span id="fpsLabel">0 FPS</span>
         </div>
+        <div id="roiHint" class="roi-hint hidden">Arrastre sobre el video para definir el ROI</div>
       </div>
 
       <div class="controls">
         <button id="cameraBtn" class="primary">Iniciar cámara</button>
         <label class="button">Abrir video<input id="videoInput" type="file" accept="video/*" hidden></label>
         <label class="button">Abrir imagen<input id="imageInput" type="file" accept="image/*" hidden></label>
+        <button id="roiBtn">Seleccionar ROI</button>
+        <button id="clearRoiBtn">Quitar ROI</button>
         <button id="stopBtn">Detener</button>
       </div>
-      <p id="status">Cargue el modelo ONNX o coloque el modelo predeterminado en <code>models/epp-yolo11/model.onnx</code>.</p>
+      <p id="status">Primero pulse <b>Cargar predeterminado</b>. Luego seleccione cámara, video o imagen.</p>
     </section>
 
     <section class="card configuration-card">
@@ -59,6 +75,46 @@
           </select>
         </div>
       </div>
+      <p class="hint">Seguimiento temporal activo: las cajas y el estado de EPP se mantienen durante pérdidas breves de detección para evitar parpadeos.</p>
+    </section>
+
+    <section class="card report-card">
+      <div class="section-title">
+        <h2>Reporte de monitoreo</h2>
+        <span id="reportEventsBadge" class="badge neutral">0 registros</span>
+      </div>
+      <div class="report-fields">
+        <div class="field"><label>Proyecto / obra</label><input id="reportProject" type="text" placeholder="Ej. Obra Riobamba"></div>
+        <div class="field"><label>Área / frente de trabajo</label><input id="reportArea" type="text" placeholder="Ej. Frente A"></div>
+        <div class="field"><label>Responsable</label><input id="reportOwner" type="text" placeholder="Nombre del responsable"></div>
+      </div>
+      <div class="row-actions">
+        <button id="downloadCsvBtn" class="primary">Descargar CSV</button>
+        <button id="downloadJsonBtn">Descargar JSON</button>
+        <button id="printReportBtn">Imprimir / PDF</button>
+        <button id="clearReportBtn">Limpiar registros</button>
+      </div>
+
+      <details class="iot-box">
+        <summary>Enviar resumen a ThingSpeak</summary>
+        <p class="hint">La clave se guarda solo en este navegador. No la incluya directamente en el repositorio público.</p>
+        <div class="report-fields">
+          <div class="field"><label>Write API Key</label><input id="thingSpeakKey" type="password" autocomplete="off" placeholder="Write API Key"></div>
+          <div class="field"><label>Intervalo de envío</label>
+            <select id="thingSpeakInterval">
+              <option value="0">Solo manual</option>
+              <option value="15">Cada 15 s</option>
+              <option value="30">Cada 30 s</option>
+              <option value="60">Cada 60 s</option>
+            </select>
+          </div>
+        </div>
+        <div class="row-actions">
+          <button id="sendThingSpeakBtn">Enviar ahora</button>
+          <span id="iotStatus" class="hint">Sin envíos.</span>
+        </div>
+        <p class="hint">Campos: 1=personas, 2=cumplen, 3=no cumplen, 4=FPS, 5=latencia ms, 6=total detecciones.</p>
+      </details>
     </section>
   </div>
 
@@ -89,9 +145,7 @@
         <h2>Detecciones y cumplimiento</h2>
         <div id="globalCompliance" class="compliance neutral">SIN EVALUAR</div>
       </div>
-      <div id="persons" class="persons">
-        <p class="empty">No se han detectado personas.</p>
-      </div>
+      <div id="persons" class="persons"><p class="empty">No se han detectado personas.</p></div>
     </section>
 
     <section class="card">
@@ -106,6 +160,8 @@
     </section>
   </aside>
 </main>
+
+<section id="printableReport" class="print-report" aria-hidden="true"></section>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>
