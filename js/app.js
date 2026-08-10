@@ -30,6 +30,56 @@ let lastReportSampleAt = 0;
 let inferenceBusy = false;
 let renderLoopActive = false;
 let inferenceLoopActive = false;
+let profileSwitching = false;
+let currentProfile = 640;
+let currentModelKey = 'yolo11s_dataset15';
+let lastProfileSwitchAt = 0;
+let latencyHistory = [];
+let inferenceTimestamps = [];
+let currentIps = 0;
+
+const MODEL_CATALOG = {
+  yolo11s_previous: {
+    label: 'YOLO11s · Modelo anterior',
+    profiles: {
+      640: 'models/yolo11s_previous/model_640.onnx',
+      512: 'models/yolo11s_previous/model_512.onnx',
+      480: 'models/yolo11s_previous/model_480.onnx'
+    }
+  },
+  yolo11s_dataset15: {
+    label: 'YOLO11s · Dataset 15',
+    profiles: {
+      640: 'models/yolo11s_dataset15/model_640.onnx',
+      512: 'models/yolo11s_dataset15/model_512.onnx',
+      480: 'models/yolo11s_dataset15/model_480.onnx'
+    }
+  },
+  yolo11m_dataset15: {
+    label: 'YOLO11m · Dataset 15',
+    profiles: {
+      640: 'models/yolo11m_dataset15/model_640.onnx',
+      512: 'models/yolo11m_dataset15/model_512.onnx',
+      480: 'models/yolo11m_dataset15/model_480.onnx'
+    }
+  }
+};
+
+function selectedModelKey() {
+  return $('modelSelect')?.value || currentModelKey || 'yolo11s_dataset15';
+}
+
+function modelPath(modelKey, size) {
+  const model = MODEL_CATALOG[modelKey];
+  if (!model) throw new Error(`Modelo ${modelKey} no configurado.`);
+  const path = model.profiles[size];
+  if (!path) throw new Error(`Resolución ${size} no configurada para ${model.label}.`);
+  return path;
+}
+
+function modelLabel(modelKey = currentModelKey) {
+  return MODEL_CATALOG[modelKey]?.label || modelKey;
+}
 
 const sessionLog = [];
 const personStats = new Map();
@@ -38,7 +88,9 @@ const personEvidence = new Map();
 const state = {
   confidence: 0.35,
   iou: 0.45,
-  skip: 2,
+  skip: 1,
+  inputSize: 640,
+  performanceMode: 'auto',
   required: new Set(),
   visible: new Set(),
   personPersistence: 30,
@@ -80,7 +132,8 @@ function applyMetadata() {
   state.required = new Set(metadata.requiredDefaults || []);
   state.visible = new Set(metadata.classes.map((_, i) => i));
   renderClassChecks();
-  $('inputSize').textContent = `${metadata.inputSize}×${metadata.inputSize}`;
+  if (!state.inputSize) state.inputSize = metadata.inputSize || 640;
+  $('inputSize').textContent = `${state.inputSize}×${state.inputSize}`;
 }
 
 function renderClassChecks() {
@@ -115,8 +168,8 @@ function renderClassChecks() {
   };
 }
 
-async function createSession(model) {
-  setStatus('Cargando modelo...');
+async function createSession(model, inputSize = state.inputSize || metadata?.inputSize || 640, modelKey = currentModelKey) {
+  setStatus(`Cargando modelo ${inputSize}×${inputSize}...`);
   const providers = [];
   if ('gpu' in navigator) providers.push('webgpu');
   providers.push('wasm');
@@ -124,16 +177,28 @@ async function createSession(model) {
   let lastError;
   for (const provider of providers) {
     try {
-      session = await ort.InferenceSession.create(model, {
+      const newSession = await ort.InferenceSession.create(model, {
         executionProviders: [provider],
         graphOptimizationLevel: 'all'
       });
+      session = newSession;
+      state.inputSize = inputSize;
+      currentProfile = inputSize;
+      currentModelKey = modelKey;
       $('provider').textContent = provider.toUpperCase();
       $('engineBadge').textContent = `Motor: ${provider.toUpperCase()}`;
       $('engineBadge').className = 'badge pass';
-      setStatus('Modelo listo. Seleccione los EPP obligatorios y luego cámara, video o imagen.');
+      $('inputSize').textContent = `${inputSize}×${inputSize}`;
+      $('activeModel').textContent = modelLabel(modelKey);
+      $('resolutionSelect').value = String(inputSize);
+      $('trackerStatus').textContent = 'ACTIVO';
       await warmup();
-      return;
+      setStatus(`${modelLabel(modelKey)} · ${inputSize}×${inputSize} listo. Seleccione los EPP y luego cámara, video o imagen.`);
+      latencyHistory = [];
+      inferenceTimestamps = [];
+      currentIps = 0;
+      $('ips').textContent = '0.0 IPS';
+      return true;
     } catch (error) {
       lastError = error;
     }
@@ -142,7 +207,7 @@ async function createSession(model) {
 }
 
 async function warmup() {
-  const size = metadata.inputSize || 640;
+  const size = state.inputSize || metadata?.inputSize || 640;
   const zero = new Float32Array(3 * size * size);
   const inputName = session.inputNames[0];
   await session.run({
@@ -150,9 +215,74 @@ async function warmup() {
   });
 }
 
+async function loadProfile(size, { fallback = true, reason = 'manual', modelKey = selectedModelKey() } = {}) {
+  if (profileSwitching) return false;
+  profileSwitching = true;
+  const previousProfile = currentProfile;
+  const previousModel = currentModelKey;
+  try {
+    const path = modelPath(modelKey, size);
+    await createSession(path, size, modelKey);
+    lastProfileSwitchAt = performance.now();
+    const label = reason === 'auto' ? 'Modo automático' : 'Modelo seleccionado';
+    setStatus(`${label}: ${modelLabel(modelKey)} · ${size}×${size} activo.`);
+    resetTracking();
+    return true;
+  } catch (error) {
+    if (fallback && size !== 640) {
+      try {
+        await createSession(modelPath(modelKey, 640), 640, modelKey);
+        setStatus(`No se pudo cargar ${size}×${size}; se activó ${modelLabel(modelKey)} · 640×640.`);
+        resetTracking();
+        return false;
+      } catch (_) {}
+    }
+    currentProfile = previousProfile;
+    currentModelKey = previousModel;
+    $('resolutionSelect').value = String(previousProfile);
+    $('modelSelect').value = previousModel;
+    throw error;
+  } finally {
+    profileSwitching = false;
+  }
+}
+
 async function loadDefault() {
   if (!metadata) await loadMetadata();
-  await createSession($('modelSelect').value);
+  const requested = Number($('resolutionSelect').value || 512);
+  await loadProfile(requested, { fallback: true, reason: 'manual', modelKey: selectedModelKey() });
+}
+
+function markInferenceComplete() {
+  const now = performance.now();
+  inferenceTimestamps.push(now);
+  inferenceTimestamps = inferenceTimestamps.filter(t => now - t <= 1000);
+  currentIps = inferenceTimestamps.length;
+  $('ips').textContent = `${currentIps.toFixed(1)} IPS`;
+}
+
+function recordLatencyForAutoTune(ms) {
+  latencyHistory.push(ms);
+  if (latencyHistory.length > 10) latencyHistory.shift();
+  if (state.performanceMode !== 'auto' || latencyHistory.length < 6 || profileSwitching) return;
+  const now = performance.now();
+  if (now - lastProfileSwitchAt < 8000) return;
+
+  const avg = latencyHistory.reduce((a, b) => a + b, 0) / latencyHistory.length;
+  let target = currentProfile;
+  if (avg > 180 && currentProfile === 640) target = 512;
+  else if (avg > 150 && currentProfile === 512) target = 480;
+  else if (avg < 65 && currentProfile === 480) target = 512;
+  else if (avg < 55 && currentProfile === 512) target = 640;
+
+  if (target !== currentProfile) {
+    loadProfile(target, { fallback: false, reason: 'auto', modelKey: currentModelKey }).catch(error => {
+      console.warn('Ajuste automático no disponible:', error);
+      state.performanceMode = 'manual';
+      $('performanceMode').value = 'manual';
+      setStatus(`Modo automático detenido: falta el modelo ${target}×${target}. Genere los perfiles ONNX 512/480.`);
+    });
+  }
 }
 
 function setStatus(text) {
@@ -347,7 +477,7 @@ async function infer() {
   ensureCanvasSize(sourceWidth, sourceHeight);
 
   const crop = roiPixels(sourceWidth, sourceHeight);
-  const size = metadata.inputSize || 640;
+  const size = state.inputSize || metadata.inputSize || 640;
   const offscreen = new OffscreenCanvas(size, size);
   const offCtx = offscreen.getContext('2d', { willReadFrequently: true });
   offCtx.fillStyle = '#000';
@@ -382,6 +512,7 @@ async function infer() {
   });
   lastLatencyMs = performance.now() - start;
   $('latency').textContent = `${lastLatencyMs.toFixed(1)} ms`;
+  recordLatencyForAutoTune(lastLatencyMs);
 
   const tensor = output[session.outputNames[0]];
   return decode(tensor, scale, padX, padY, crop, sourceWidth, sourceHeight);
@@ -888,6 +1019,10 @@ function renderLoop() {
   if (now - lastFpsAt > 1000) {
     currentFps = fpsFrames * 1000 / (now - lastFpsAt);
     $('fpsLabel').textContent = `${currentFps.toFixed(1)} FPS`;
+    const ipsNow = performance.now();
+    inferenceTimestamps = inferenceTimestamps.filter(t => ipsNow - t <= 1000);
+    currentIps = inferenceTimestamps.length;
+    $('ips').textContent = `${currentIps.toFixed(1)} IPS`;
     fpsFrames = 0;
     lastFpsAt = now;
   }
@@ -914,6 +1049,7 @@ async function inferenceLoop() {
     // Actualizar paneles una sola vez por inferencia; el dibujo visual corre aparte.
     render(lastBoxes, lastPeople, true);
     updateReportStats(lastPeople);
+    markInferenceComplete();
   } catch (error) {
     console.error(error);
     setStatus(`Error de inferencia: ${error.message}`);
@@ -1044,6 +1180,8 @@ function reportMeta() {
     requiredEpp: metadata ? [...state.required].map(id => metadata.classes[id]) : [],
     confidence: state.confidence,
     iouNms: state.iou,
+    inputSize: state.inputSize,
+    performanceMode: state.performanceMode,
     roi: state.roi
   };
 }
@@ -1059,6 +1197,7 @@ function reportSummary() {
     nonCompliantNow,
     records: sessionLog.length,
     fps: Number(currentFps.toFixed(1)),
+    ips: Number(currentIps.toFixed(1)),
     latencyMs: Number(lastLatencyMs.toFixed(1)),
     detections: lastBoxes.length
   };
@@ -1188,7 +1327,7 @@ $('loadDefaultBtn').onclick = () => loadDefault().catch(error => {
 
 $('modelInput').onchange = event => {
   const file = event.target.files[0];
-  if (file) createSession(file.arrayBuffer()).catch(error => setStatus(error.message));
+  if (file) createSession(file.arrayBuffer(), Number($('resolutionSelect').value || 640)).catch(error => setStatus(error.message));
 };
 
 $('metadataInput').onchange = async event => {
@@ -1220,6 +1359,38 @@ $('frameSkip').onchange = event => {
   state.skip = Number(event.target.value);
 };
 
+$('modelSelect').onchange = event => {
+  const modelKey = event.target.value;
+  if (!session) {
+    currentModelKey = modelKey;
+    $('activeModel').textContent = `${modelLabel(modelKey)} (pendiente)`;
+    setStatus(`${modelLabel(modelKey)} seleccionado. Pulse Cargar modelo.`);
+    return;
+  }
+  const size = Number($('resolutionSelect').value || currentProfile || 512);
+  loadProfile(size, { fallback: true, reason: 'manual', modelKey }).catch(error =>
+    setStatus(`No se pudo cargar ${modelLabel(modelKey)}: ${error.message}`)
+  );
+};
+
+$('resolutionSelect').onchange = event => {
+  const size = Number(event.target.value);
+  if (!session) {
+    state.inputSize = size;
+    $('inputSize').textContent = `${size}×${size} (pendiente)`;
+    return;
+  }
+  loadProfile(size, { fallback: true, reason: 'manual' }).catch(error => setStatus(`No se pudo cargar ${size}×${size}: ${error.message}`));
+};
+
+$('performanceMode').onchange = event => {
+  state.performanceMode = event.target.value;
+  latencyHistory = [];
+  setStatus(state.performanceMode === 'auto'
+    ? 'Modo rendimiento automático activo. Ajustará la resolución según la latencia si los perfiles ONNX están disponibles.'
+    : 'Modo rendimiento manual activo.');
+};
+
 $('downloadCsvBtn').onclick = downloadCsv;
 $('downloadJsonBtn').onclick = downloadJson;
 $('printReportBtn').onclick = printReport;
@@ -1244,6 +1415,13 @@ function restoreReportSession() {
   }
 }
 
+$('modelSelect').value = 'yolo11s_dataset15';
+currentModelKey = 'yolo11s_dataset15';
+$('activeModel').textContent = 'YOLO11s · Dataset 15 (pendiente)';
+$('resolutionSelect').value = '512';
+$('performanceMode').value = state.performanceMode;
+state.inputSize = 512;
+$('inputSize').textContent = '512×512 (pendiente)';
 restoreReportSession();
 updateRoiUi();
 

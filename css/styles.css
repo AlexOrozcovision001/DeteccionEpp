@@ -10,3 +10,11 @@
 #stage .roi-canvas{z-index:4;background:transparent;pointer-events:none;touch-action:none}
 #stage .roi-canvas.roi-selecting{pointer-events:auto;cursor:crosshair}
 .hud{z-index:5}.roi-hint{z-index:6}.hud-right{display:flex;align-items:center;gap:12px}.roi-status{font-size:.72rem;padding:4px 8px;border-radius:999px;background:#293c50;color:#cad7e3}.roi-status.active{background:#123f51;color:#65eaff;border:1px solid #18d4ff}.roi-active{background:#123f51!important;color:#65eaff!important;border-color:#18d4ff!important;box-shadow:0 0 0 2px rgba(24,212,255,.15) inset}.report-live{margin:6px 0 2px}.report-live b{color:var(--green)}
+
+/* Rendimiento IA */
+.performance-grid{grid-template-columns:repeat(2,minmax(0,1fr)) minmax(180px,.8fr)}
+.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+#ips{color:var(--green)}
+#trackerStatus{color:var(--green)}
+@media(max-width:1050px){.performance-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:620px){.performance-grid{grid-template-columns:1fr}}
