@@ -1,4 +1,22 @@
 const $ = id => document.getElementById(id);
+
+const DEVICE = {
+  isIOS:
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1),
+  isMobile:
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+};
+
+function preferredExecutionProvider() {
+  if (DEVICE.isIOS) return 'wasm';
+  if ('gpu' in navigator) return 'webgpu';
+  return 'wasm';
+}
+
+function recommendedInputSize() {
+  return 480;
+}
 const video = $('video');
 const canvas = $('canvas');
 const ctx = canvas.getContext('2d');
@@ -302,7 +320,7 @@ async function createSession(
       await new Promise(resolve => setTimeout(resolve, 250));
     }
 
-    const provider = ('gpu' in navigator) ? 'webgpu' : 'wasm';
+    const provider = preferredExecutionProvider();
 
     setStatus(
       `Inicializando ${modelDescription} con ${provider.toUpperCase()}...`
@@ -422,6 +440,13 @@ async function loadProfile(size, { fallback = false, reason = 'manual', modelKey
 }
 
 async function loadDefault() {
+  if (DEVICE.isIOS) {
+    currentModelKey = 'yolo11s_dataset15';
+    state.inputSize = 480;
+    if ($('modelSelect')) $('modelSelect').value = 'yolo11s_dataset15';
+    if ($('resolutionSelect')) $('resolutionSelect').value = '480';
+  }
+
   if (!metadata) await loadMetadata();
   const requested = Number($('resolutionSelect').value || 512);
   await loadProfile(requested, { fallback: true, reason: 'manual', modelKey: selectedModelKey() });
@@ -1962,6 +1987,12 @@ $('frameSkip').onchange = event => {
 };
 
 $('modelSelect').onchange = event => {
+  if (DEVICE.isIOS && event.target.value === 'yolo11m_dataset15') {
+    event.target.value = 'yolo11s_dataset15';
+    currentModelKey = 'yolo11s_dataset15';
+    setStatus('En iPhone/iPad se utiliza YOLO11s 480×480 para evitar errores de memoria.');
+    return;
+  }
   const modelKey = event.target.value;
   if (!session) {
     currentModelKey = modelKey;
@@ -2147,7 +2178,52 @@ if (savedThingSpeakInterval && $('thingSpeakInterval')) {
 }
 configureThingSpeakTimer();
 
+
+function applyDeviceProfile() {
+  const provider = preferredExecutionProvider();
+
+  state.inputSize = recommendedInputSize();
+
+  if ($('resolutionSelect')) {
+    $('resolutionSelect').value = '480';
+  }
+
+  if (DEVICE.isIOS && $('modelSelect')) {
+    $('modelSelect').value = 'yolo11s_dataset15';
+    currentModelKey = 'yolo11s_dataset15';
+
+    for (const option of $('modelSelect').options) {
+      if (option.value === 'yolo11m_dataset15') {
+        option.disabled = true;
+        if (!option.textContent.includes('iPhone')) {
+          option.textContent += ' · no disponible en iPhone';
+        }
+      }
+    }
+  }
+
+  if ($('provider')) {
+    $('provider').textContent = provider.toUpperCase();
+  }
+
+  if ($('engineBadge')) {
+    $('engineBadge').textContent = DEVICE.isIOS
+      ? 'Motor: WASM · iPhone/iPad'
+      : `Motor: ${provider.toUpperCase()}`;
+  }
+
+  console.log(
+    'Perfil:',
+    DEVICE.isIOS ? 'iOS' : (DEVICE.isMobile ? 'Móvil' : 'Escritorio'),
+    'Proveedor:',
+    provider,
+    'Entrada:',
+    state.inputSize
+  );
+}
+
 restoreReportSession();
+applyDeviceProfile();
 updateAcquisitionClock();
 updateRoiUi();
 
