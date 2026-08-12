@@ -162,6 +162,7 @@ const colors = [
 
 ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@dev/dist/';
 ort.env.wasm.numThreads = 1;
+ort.env.wasm.proxy = false;
 
 async function loadMetadata(url = 'models/epp-yolo11/metadata.json') {
   metadata = await fetch(url).then(r => {
@@ -555,14 +556,24 @@ function syncStageAspect() {
 async function startCamera() {
   stopSource(false);
   stream = await navigator.mediaDevices.getUserMedia({
-    video: {
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-      facingMode: 'environment'
-    },
-    audio: false
-  });
+      video: DEVICE.isIOS
+        ? {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 640, max: 640 },
+            height: { ideal: 480, max: 480 },
+            frameRate: { ideal: 20, max: 24 }
+          }
+        : {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30, max: 60 }
+          },
+      audio: false
+    });
   video.srcObject = stream;
+  video.playsInline = true;
+  video.muted = true;
   video.src = '';
   video.controls = false;
   await video.play();
@@ -626,6 +637,18 @@ function stopSource(clearRoi = false) {
   $('persons').innerHTML = '<p class="empty">No se han detectado personas.</p>';
   $('globalCompliance').textContent = 'SIN EVALUAR';
   $('globalCompliance').className = 'compliance neutral';
+  if (video.srcObject && !stream) {
+    video.srcObject = null;
+  }
+
+  // En iOS se limpian buffers visuales para reducir memoria retenida.
+  if (DEVICE.isIOS) {
+    try {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      roiCtx.clearRect(0, 0, roiCanvas.width, roiCanvas.height);
+      imageCtx.clearRect(0, 0, imageCanvas.width, imageCanvas.height);
+    } catch (_) {}
+  }
 }
 
 function sourceDimensions() {
@@ -1260,7 +1283,7 @@ async function buildEvidenceBlob(people, now, fileName) {
     throw new Error('No hay una fuente activa para capturar.');
   }
 
-  const maxWidth = 1280;
+  const maxWidth = DEVICE.isIOS ? 960 : 1280;
   const scale = Math.min(1, maxWidth / sourceWidth);
   const width = Math.max(1, Math.round(sourceWidth * scale));
   const height = Math.max(1, Math.round(sourceHeight * scale));
@@ -2184,8 +2207,18 @@ function applyDeviceProfile() {
 
   state.inputSize = recommendedInputSize();
 
+  // iOS: limitar el ritmo de inferencia para evitar reinicios por memoria.
+  if (DEVICE.isIOS) {
+    state.inferenceMinIntervalMs = 700;
+  }
+
   if ($('resolutionSelect')) {
     $('resolutionSelect').value = '480';
+  }
+
+  if (DEVICE.isIOS) {
+    state.evidenceEnabled = false;
+    if ($('evidenceEnabled')) $('evidenceEnabled').checked = false;
   }
 
   if (DEVICE.isIOS && $('modelSelect')) {
