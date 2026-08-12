@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#07111f">
   <title>Detección EPP en tiempo real</title>
   <link rel="stylesheet" href="css/styles.css">
-  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@dev/dist/ort.webgpu.min.js"></script>
 </head>
 <body>
 <header>
@@ -83,12 +83,13 @@
           </select>
         </div>
         <div class="field frame-field">
-          <label>Procesar cada</label>
+          <label>Ritmo de IA</label>
           <select id="frameSkip">
-            <option value="1" selected>1 frame</option>
-            <option value="2">2 frames</option>
-            <option value="3">3 frames</option>
-            <option value="4">4 frames</option>
+            <option value="0" selected>Máxima velocidad</option>
+            <option value="200">Objetivo 5 IPS</option>
+            <option value="250">Objetivo 4 IPS</option>
+            <option value="333">Objetivo 3 IPS</option>
+            <option value="500">Objetivo 2 IPS</option>
           </select>
         </div>
       </div>
@@ -98,14 +99,85 @@
     <section class="card report-card">
       <div class="section-title">
         <h2>Reporte de monitoreo</h2>
-        <span id="reportEventsBadge" class="badge pass">Registro automático · 0</span>
+        <span id="reportEventsBadge" class="badge pass">Registro · cada 5 s · 0</span>
       </div>
+
       <div class="report-fields">
         <div class="field"><label>Proyecto / obra</label><input id="reportProject" type="text" placeholder="Ej. Obra Riobamba"></div>
         <div class="field"><label>Área / frente de trabajo</label><input id="reportArea" type="text" placeholder="Ej. Frente A"></div>
         <div class="field"><label>Responsable</label><input id="reportOwner" type="text" placeholder="Nombre del responsable"></div>
+
+        <div class="field">
+          <label>Tiempo entre tomas de datos</label>
+          <select id="reportSampleInterval">
+            <option value="1">Cada 1 segundo</option>
+            <option value="2">Cada 2 segundos</option>
+            <option value="5" selected>Cada 5 segundos</option>
+            <option value="10">Cada 10 segundos</option>
+            <option value="15">Cada 15 segundos</option>
+            <option value="30">Cada 30 segundos</option>
+            <option value="60">Cada 1 minuto</option>
+            <option value="120">Cada 2 minutos</option>
+            <option value="300">Cada 5 minutos</option>
+          </select>
+        </div>
       </div>
-      <p class="hint report-live"><b>Registro automático:</b> se guarda una muestra por segundo mientras la cámara/video/imagen está siendo analizada. <span id="lastRecordLabel">Aún sin muestras.</span></p>
+
+      <p class="hint report-live">
+        <b>Adquisición automática:</b>
+        <span id="sampleCountdownLabel">Próxima toma: al iniciar una fuente.</span>
+        <span id="lastRecordLabel">Aún sin muestras.</span>
+      </p>
+
+      <details class="iot-box">
+        <summary>Evidencia fotográfica de incumplimiento (opcional)</summary>
+        <div class="report-fields">
+          <div class="field">
+            <label>Captura automática</label>
+            <label><input id="evidenceEnabled" type="checkbox"> Activar solo cuando exista NO CUMPLE</label>
+          </div>
+
+          <div class="field">
+            <label>Tiempo mínimo entre fotografías</label>
+            <select id="evidenceCooldown">
+              <option value="5">5 segundos</option>
+              <option value="15">15 segundos</option>
+              <option value="30" selected>30 segundos</option>
+              <option value="60">1 minuto</option>
+              <option value="120">2 minutos</option>
+              <option value="300">5 minutos</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Calidad JPEG</label>
+            <select id="evidenceQuality">
+              <option value="0.70">70 % · Menor tamaño</option>
+              <option value="0.82" selected>82 % · Equilibrado</option>
+              <option value="0.92">92 % · Alta calidad</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>URL del servidor de evidencias</label>
+            <input id="evidenceEndpoint" type="url" placeholder="https://servidor.com/api/epp/evidence">
+          </div>
+
+          <div class="field">
+            <label>API Key / token del servidor</label>
+            <input id="evidenceApiKey" type="password" autocomplete="off" placeholder="Opcional">
+          </div>
+        </div>
+
+        <p class="hint">La fotografía incluye la imagen, cajas de detección, ROI, fecha/hora y personas en incumplimiento. Si no configura servidor, la última evidencia queda disponible para descarga manual.</p>
+
+        <div class="row-actions">
+          <button id="captureEvidenceBtn">Capturar evidencia ahora</button>
+          <button id="downloadEvidenceBtn" disabled>Descargar última evidencia</button>
+          <span id="evidenceStatus" class="hint">Captura desactivada.</span>
+        </div>
+      </details>
+
       <div class="row-actions">
         <button id="downloadCsvBtn" class="primary">Descargar CSV</button>
         <button id="downloadJsonBtn">Descargar JSON</button>
@@ -124,6 +196,8 @@
               <option value="15">Cada 15 s</option>
               <option value="30">Cada 30 s</option>
               <option value="60">Cada 60 s</option>
+              <option value="120">Cada 2 min</option>
+              <option value="300">Cada 5 min</option>
             </select>
           </div>
         </div>
@@ -131,7 +205,7 @@
           <button id="sendThingSpeakBtn">Enviar ahora</button>
           <span id="iotStatus" class="hint">Sin envíos.</span>
         </div>
-        <p class="hint">Campos: 1=personas, 2=cumplen, 3=no cumplen, 4=FPS, 5=latencia ms, 6=total detecciones.</p>
+        <p class="hint">Campos: 1=personas, 2=cumplen, 3=no cumplen, 4=latencia ms, 5=IPS, 6=detecciones, 7=FPS, 8=% cumplimiento.</p>
       </details>
     </section>
   </div>
@@ -154,6 +228,7 @@
       </div>
       <div class="grid metrics">
         <div><span>Inferencia</span><b id="latency">—</b></div>
+        <div><span>Pipeline total</span><b id="pipelineLatency">—</b></div>
         <div><span>Modelo activo</span><b id="activeModel">—</b></div>
         <div><span>IA</span><b id="ips">0.0 IPS</b></div>
         <div><span>Detecciones</span><b id="detectionCount">0</b></div>
@@ -185,6 +260,6 @@
 </main>
 
 <section id="printableReport" class="print-report" aria-hidden="true"></section>
-<script type="module" src="js/app.js"></script>
+<script type="module" src="js/app.js?v=9"></script>
 </body>
 </html>

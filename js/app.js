@@ -8,6 +8,9 @@ const imageCanvas = $('imageCanvas');
 const imageCtx = imageCanvas.getContext('2d');
 
 let session = null;
+let loadedModelKey = null;
+let loadedModelSize = null;
+let modelLoadInProgress = false;
 let metadata = null;
 let stream = null;
 let running = false;
@@ -37,6 +40,20 @@ let lastProfileSwitchAt = 0;
 let latencyHistory = [];
 let inferenceTimestamps = [];
 let currentIps = 0;
+let lastPipelineMs = 0;
+let sampleSequence = 0;
+let lastEvidenceAt = 0;
+let lastEvidenceBlob = null;
+let lastEvidenceFileName = '';
+let evidenceBusy = false;
+const evidenceEvents = [];
+let inferenceWorkspace = {
+  size: 0,
+  canvas: null,
+  ctx: null,
+  input: null,
+  tensor: null
+};
 
 const MODEL_CATALOG = {
   yolo11s_previous: {
@@ -90,12 +107,12 @@ const state = {
   iou: 0.45,
   skip: 1,
   inputSize: 640,
-  performanceMode: 'auto',
+  performanceMode: 'manual',
   required: new Set(),
   visible: new Set(),
   personPersistence: 30,
   eppPersistence: 20,
-  personHoldMs: 2600,
+  personHoldMs: 3200,
   eppHoldMs: 1800,
   smoothingPerson: 0.34,
   smoothingEpp: 0.30,
@@ -104,7 +121,14 @@ const state = {
   eppOnThreshold: 0.36,
   eppOffThreshold: 0.14,
   eppGain: 0.22,
-  eppDecay: 0.035
+  eppDecay: 0.035,
+  reportSampleIntervalMs: 5000,
+  inferenceMinIntervalMs: 0,
+  evidenceEnabled: false,
+  evidenceCooldownMs: 30000,
+  evidenceQuality: 0.82,
+  evidenceEndpoint: '',
+  evidenceApiKey: ''
 };
 
 const colors = [
@@ -118,7 +142,8 @@ const colors = [
   '#bcaaa4'  // Regular Shoes
 ];
 
-ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
+ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@dev/dist/';
+ort.env.wasm.numThreads = 1;
 
 async function loadMetadata(url = 'models/epp-yolo11/metadata.json') {
   metadata = await fetch(url).then(r => {
@@ -168,46 +193,199 @@ function renderClassChecks() {
   };
 }
 
-async function createSession(model, inputSize = state.inputSize || metadata?.inputSize || 640, modelKey = currentModelKey) {
-  setStatus(`Cargando modelo ${inputSize}×${inputSize}...`);
-  const providers = [];
-  if ('gpu' in navigator) providers.push('webgpu');
-  providers.push('wasm');
+async function fetchModelWithProgress(url, onProgress) {
+  const response = await fetch(url, { cache: 'no-store' });
 
-  let lastError;
-  for (const provider of providers) {
-    try {
-      const newSession = await ort.InferenceSession.create(model, {
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} al descargar ${url}`);
+  }
+
+  const total = Number(response.headers.get('content-length')) || 0;
+
+  // Algunos servidores/navegadores no exponen Content-Length o body streaming.
+  // En ese caso usamos arrayBuffer directamente.
+  if (!response.body || !total) {
+    const buffer = await response.arrayBuffer();
+    onProgress?.(1, buffer.byteLength, buffer.byteLength);
+    return new Uint8Array(buffer);
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let received = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    chunks.push(value);
+    received += value.byteLength;
+    onProgress?.(received / total, received, total);
+  }
+
+  const merged = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  onProgress?.(1, received, total || received);
+  return merged;
+}
+
+async function createSession(
+  model,
+  inputSize = state.inputSize || metadata?.inputSize || 480,
+  modelKey = currentModelKey
+) {
+  const modelDescription = `${modelLabel(modelKey)} · ${inputSize}×${inputSize}`;
+
+  if (
+    session &&
+    loadedModelKey === modelKey &&
+    loadedModelSize === inputSize
+  ) {
+    setStatus(`${modelDescription} ya está activo.`);
+    return true;
+  }
+
+  if (modelLoadInProgress) {
+    setStatus('Espere: ya se está cargando un modelo.');
+    return false;
+  }
+
+  modelLoadInProgress = true;
+  profileSwitching = true;
+
+  let modelBytes = null;
+  let newSession = null;
+
+  try {
+    setStatus(`Preparando ${modelDescription}...`);
+
+    if (typeof model === 'string') {
+      modelBytes = await fetchModelWithProgress(
+        model,
+        (progress, received, total) => {
+          const percent = Math.max(0, Math.min(100, Math.round(progress * 100)));
+          const receivedMB = (received / 1024 / 1024).toFixed(1);
+          const totalMB = total ? (total / 1024 / 1024).toFixed(1) : '?';
+          setStatus(
+            `Descargando ${modelDescription}: <b>${percent}%</b> · ` +
+            `${receivedMB} / ${totalMB} MB`
+          );
+        }
+      );
+    } else if (model instanceof Uint8Array) {
+      modelBytes = model;
+    } else if (model instanceof ArrayBuffer) {
+      modelBytes = new Uint8Array(model);
+    } else {
+      throw new Error('Formato de modelo no válido.');
+    }
+
+    if (session) {
+      setStatus(`Liberando modelo anterior antes de cargar ${modelDescription}...`);
+      try {
+        if (typeof session.release === 'function') {
+          await session.release();
+        }
+      } catch (e) {
+        console.warn('No se pudo liberar la sesión anterior:', e);
+      }
+
+      session = null;
+      loadedModelKey = null;
+      loadedModelSize = null;
+
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+
+    const provider = ('gpu' in navigator) ? 'webgpu' : 'wasm';
+
+    setStatus(
+      `Inicializando ${modelDescription} con ${provider.toUpperCase()}...`
+    );
+
+    newSession = await ort.InferenceSession.create(
+      modelBytes,
+      {
         executionProviders: [provider],
         graphOptimizationLevel: 'all'
-      });
-      session = newSession;
-      state.inputSize = inputSize;
-      currentProfile = inputSize;
-      currentModelKey = modelKey;
-      $('provider').textContent = provider.toUpperCase();
-      $('engineBadge').textContent = `Motor: ${provider.toUpperCase()}`;
-      $('engineBadge').className = 'badge pass';
-      $('inputSize').textContent = `${inputSize}×${inputSize}`;
-      $('activeModel').textContent = modelLabel(modelKey);
-      $('resolutionSelect').value = String(inputSize);
-      $('trackerStatus').textContent = 'ACTIVO';
-      await warmup();
-      setStatus(`${modelLabel(modelKey)} · ${inputSize}×${inputSize} listo. Seleccione los EPP y luego cámara, video o imagen.`);
-      latencyHistory = [];
-      inferenceTimestamps = [];
-      currentIps = 0;
-      $('ips').textContent = '0.0 IPS';
-      return true;
-    } catch (error) {
-      lastError = error;
+      }
+    );
+
+    const zero = new Float32Array(3 * inputSize * inputSize);
+    const inputName = newSession.inputNames[0];
+
+    setStatus(`Calentando ${modelDescription}...`);
+
+    await newSession.run({
+      [inputName]: new ort.Tensor(
+        'float32',
+        zero,
+        [1, 3, inputSize, inputSize]
+      )
+    });
+
+    session = newSession;
+    newSession = null;
+
+    loadedModelKey = modelKey;
+    loadedModelSize = inputSize;
+    state.inputSize = inputSize;
+    currentProfile = inputSize;
+    currentModelKey = modelKey;
+
+    $('provider').textContent = provider.toUpperCase();
+    $('engineBadge').textContent = `Motor: ${provider.toUpperCase()}`;
+    $('engineBadge').className = 'badge pass';
+    $('inputSize').textContent = `${inputSize}×${inputSize}`;
+    $('activeModel').textContent = modelLabel(modelKey);
+    $('resolutionSelect').value = String(inputSize);
+    $('trackerStatus').textContent = 'ACTIVO';
+
+    latencyHistory = [];
+    inferenceTimestamps = [];
+    currentIps = 0;
+    $('ips').textContent = '0.0 IPS';
+
+    resetTracking(`modelo ${modelDescription}`);
+
+    setStatus(`${modelDescription} activo con ${provider.toUpperCase()}.`);
+    return true;
+
+  } catch (error) {
+    if (newSession) {
+      try {
+        if (typeof newSession.release === 'function') {
+          await newSession.release();
+        }
+      } catch (_) {}
     }
+
+    session = null;
+    loadedModelKey = null;
+    loadedModelSize = null;
+
+    $('engineBadge').textContent = 'Motor: sin iniciar';
+    $('provider').textContent = '—';
+
+    throw new Error(
+      `No se pudo inicializar el modelo: ${error?.message || error}`
+    );
+
+  } finally {
+    modelBytes = null;
+    modelLoadInProgress = false;
+    profileSwitching = false;
   }
-  throw lastError;
 }
 
 async function warmup() {
-  const size = state.inputSize || metadata?.inputSize || 640;
+  if (!session) return;
+  const size = state.inputSize || metadata?.inputSize || 480;
   const zero = new Float32Array(3 * size * size);
   const inputName = session.inputNames[0];
   await session.run({
@@ -215,35 +393,31 @@ async function warmup() {
   });
 }
 
-async function loadProfile(size, { fallback = true, reason = 'manual', modelKey = selectedModelKey() } = {}) {
-  if (profileSwitching) return false;
-  profileSwitching = true;
+async function loadProfile(size, { fallback = false, reason = 'manual', modelKey = selectedModelKey() } = {}) {
+  if (modelLoadInProgress) return false;
+
   const previousProfile = currentProfile;
   const previousModel = currentModelKey;
+
   try {
     const path = modelPath(modelKey, size);
-    await createSession(path, size, modelKey);
+    const ok = await createSession(path, size, modelKey);
+    if (!ok) return false;
+
     lastProfileSwitchAt = performance.now();
+
     const label = reason === 'auto' ? 'Modo automático' : 'Modelo seleccionado';
     setStatus(`${label}: ${modelLabel(modelKey)} · ${size}×${size} activo.`);
-    resetTracking();
     return true;
+
   } catch (error) {
-    if (fallback && size !== 640) {
-      try {
-        await createSession(modelPath(modelKey, 640), 640, modelKey);
-        setStatus(`No se pudo cargar ${size}×${size}; se activó ${modelLabel(modelKey)} · 640×640.`);
-        resetTracking();
-        return false;
-      } catch (_) {}
-    }
     currentProfile = previousProfile;
     currentModelKey = previousModel;
-    $('resolutionSelect').value = String(previousProfile);
-    $('modelSelect').value = previousModel;
+
+    if ($('resolutionSelect')) $('resolutionSelect').value = String(previousProfile);
+    if ($('modelSelect')) $('modelSelect').value = previousModel;
+
     throw error;
-  } finally {
-    profileSwitching = false;
   }
 }
 
@@ -289,12 +463,30 @@ function setStatus(text) {
   $('status').innerHTML = text;
 }
 
-function resetTracking() {
+function resetTracking(reason = 'manual') {
   lastBoxes = [];
   lastPeople = [];
   tracks = [];
   personEvidence.clear();
   nextTrackId = 1;
+
+  inferenceTimestamps = [];
+  currentIps = 0;
+
+  if ($('ips')) $('ips').textContent = '0.0 IPS';
+  if ($('detectionCount')) $('detectionCount').textContent = '0';
+
+  if ($('persons')) {
+    $('persons').innerHTML =
+      '<p class="empty">No se han detectado personas.</p>';
+  }
+
+  if ($('globalCompliance')) {
+    $('globalCompliance').textContent = 'SIN EVALUAR';
+    $('globalCompliance').className = 'compliance neutral';
+  }
+
+  console.log(`Tracker reiniciado: ${reason}`);
 }
 
 function ensureCanvasSize(width, height) {
@@ -359,6 +551,7 @@ async function startCamera() {
 
 function openVideo(file) {
   stopSource(false);
+  resetTracking('nuevo video');
   video.srcObject = null;
   video.src = URL.createObjectURL(file);
   video.controls = true;
@@ -376,6 +569,7 @@ function openVideo(file) {
 
 async function openImage(file) {
   stopSource(false);
+  resetTracking('nueva imagen');
   imageBitmap = await createImageBitmap(file);
   sourceType = 'image';
   showImageLayer();
@@ -388,7 +582,7 @@ async function openImage(file) {
 
 function stopSource(clearRoi = false) {
   running = false;
-  resetTracking();
+  resetTracking('fuente detenida');
   if (clearRoi) state.roi = null;
   if (stream) {
     stream.getTracks().forEach(track => track.stop());
@@ -470,16 +664,52 @@ function drawRoi(width, height) {
   roiCtx.fillText(text, r.x + 12, ty);
   roiCtx.restore();
 }
+function getInferenceWorkspace(size) {
+  if (
+    inferenceWorkspace.size !== size ||
+    !inferenceWorkspace.canvas ||
+    !inferenceWorkspace.ctx ||
+    !inferenceWorkspace.input ||
+    !inferenceWorkspace.tensor
+  ) {
+    const workCanvas = new OffscreenCanvas(size, size);
+    const workCtx = workCanvas.getContext('2d', {
+      willReadFrequently: true,
+      alpha: false,
+      desynchronized: true
+    });
+
+    workCtx.imageSmoothingEnabled = true;
+    workCtx.imageSmoothingQuality = 'low';
+
+    const input = new Float32Array(3 * size * size);
+
+    inferenceWorkspace = {
+      size,
+      canvas: workCanvas,
+      ctx: workCtx,
+      input,
+      tensor: new ort.Tensor('float32', input, [1, 3, size, size])
+    };
+  }
+
+  return inferenceWorkspace;
+}
+
 async function infer() {
+  const totalStart = performance.now();
   const [sourceWidth, sourceHeight] = sourceDimensions();
   if (!sourceWidth || !sourceHeight) return [];
 
   ensureCanvasSize(sourceWidth, sourceHeight);
 
   const crop = roiPixels(sourceWidth, sourceHeight);
-  const size = state.inputSize || metadata.inputSize || 640;
-  const offscreen = new OffscreenCanvas(size, size);
-  const offCtx = offscreen.getContext('2d', { willReadFrequently: true });
+  const size = state.inputSize || metadata.inputSize || 480;
+  const workspace = getInferenceWorkspace(size);
+  const offCtx = workspace.ctx;
+  const input = workspace.input;
+  const inputTensor = workspace.tensor;
+
   offCtx.fillStyle = '#000';
   offCtx.fillRect(0, 0, size, size);
 
@@ -496,26 +726,46 @@ async function infer() {
   );
 
   const rgba = offCtx.getImageData(0, 0, size, size).data;
-  const input = new Float32Array(3 * size * size);
   const plane = size * size;
 
-  for (let i = 0; i < plane; i++) {
-    input[i] = rgba[i * 4] / 255;
-    input[plane + i] = rgba[i * 4 + 1] / 255;
-    input[2 * plane + i] = rgba[i * 4 + 2] / 255;
+  // Reutiliza el mismo Float32Array para evitar asignaciones/GC en cada inferencia.
+  for (let i = 0, p = 0; i < plane; i++, p += 4) {
+    input[i] = rgba[p] * (1 / 255);
+    input[plane + i] = rgba[p + 1] * (1 / 255);
+    input[2 * plane + i] = rgba[p + 2] * (1 / 255);
   }
 
-  const start = performance.now();
+  const inferenceStart = performance.now();
   const inputName = session.inputNames[0];
   const output = await session.run({
-    [inputName]: new ort.Tensor('float32', input, [1, 3, size, size])
+    [inputName]: inputTensor
   });
-  lastLatencyMs = performance.now() - start;
+
+  lastLatencyMs = performance.now() - inferenceStart;
   $('latency').textContent = `${lastLatencyMs.toFixed(1)} ms`;
   recordLatencyForAutoTune(lastLatencyMs);
 
   const tensor = output[session.outputNames[0]];
-  return decode(tensor, scale, padX, padY, crop, sourceWidth, sourceHeight);
+  const decoded = decode(
+    tensor,
+    scale,
+    padX,
+    padY,
+    crop,
+    sourceWidth,
+    sourceHeight
+  );
+
+  // Libera la salida de ORT después de decodificarla para evitar acumulación
+  // de memoria entre inferencias largas.
+  try { tensor.dispose?.(); } catch (_) {}
+
+  lastPipelineMs = performance.now() - totalStart;
+  if ($('pipelineLatency')) {
+    $('pipelineLatency').textContent = `${lastPipelineMs.toFixed(1)} ms`;
+  }
+
+  return decoded;
 }
 
 function decode(tensor, scale, padX, padY, crop, sourceWidth, sourceHeight) {
@@ -657,8 +907,8 @@ function updateTracks(detections) {
       const person = detections[di][5] === metadata.personClass;
       const overlap = iou(predicted, detections[di]);
       const distance = normalizedCenterDistance(predicted, detections[di]);
-      const maxDistance = person ? 0.72 : 0.46;
-      const minOverlap = person ? 0.05 : 0.10;
+      const maxDistance = person ? 0.85 : 0.46;
+      const minOverlap = person ? 0.02 : 0.10;
       if (overlap >= minOverlap || distance <= maxDistance) {
         const score = overlap * 1.8 + Math.max(0, maxDistance - distance);
         candidates.push({ ti, di, score });
@@ -694,7 +944,7 @@ function updateTracks(detections) {
   for (const ti of unmatchedTracks) {
     const track = tracks[ti];
     track.missed += 1;
-    if (track.classId === metadata.personClass && track.missed <= 5) {
+    if (track.classId === metadata.personClass && track.missed <= 8) {
       track.box = predictTrackBox(track);
       track.velocity[0] *= 0.86;
       track.velocity[1] *= 0.86;
@@ -781,13 +1031,23 @@ function stabilizeCompliance(people) {
   for (const person of people) {
     let memory = personEvidence.get(person.id);
     if (!memory) {
-      memory = { evidence: new Map(), present: new Map(), lastSeen: performance.now() };
+      memory = { evidence: new Map(), present: new Map(), confidence: new Map(), lastSeen: performance.now() };
       personEvidence.set(person.id, memory);
     }
     memory.lastSeen = performance.now();
 
     for (const classId of state.required) {
       const rawDetected = person.rawEpp.has(classId);
+
+      // La evidencia temporal se usa solo internamente para estabilizar.
+      // La confianza mostrada al usuario proviene exclusivamente de YOLO.
+      if (rawDetected) {
+        const currentDetection = person.rawEpp.get(classId);
+        if (currentDetection && Number.isFinite(currentDetection[4])) {
+          memory.confidence.set(classId, currentDetection[4]);
+        }
+      }
+
       let value = memory.evidence.get(classId) || 0;
       value = rawDetected
         ? Math.min(1, value + state.eppGain)
@@ -808,6 +1068,7 @@ function stabilizeCompliance(people) {
     person.missing = [...state.required].filter(classId => !memory.present.get(classId));
     person.ok = person.missing.length === 0;
     person.evidence = memory.evidence;
+    person.yoloConfidence = memory.confidence;
   }
 
   const now = performance.now();
@@ -905,11 +1166,22 @@ function renderCompliance(people) {
       </div>
       ${[...state.required].map(classId => {
         const detected = person.epp.has(classId);
-        const evidence = person.evidence?.get(classId) || 0;
+
+        // Mostrar la última confianza REAL de YOLO, no la evidencia temporal.
+        const currentRaw = person.rawEpp?.get(classId);
+        const confidence = currentRaw?.[4] ?? person.yoloConfidence?.get(classId);
+
+        let statusText = '✗ No detectado';
+        if (detected) {
+          statusText = Number.isFinite(confidence)
+            ? `✓ Detectado · ${(confidence * 100).toFixed(0)}%`
+            : '✓ Detectado';
+        }
+
         return `
           <div class="ppe-row">
             <span>${metadata.classes[classId]}</span>
-            <b class="${detected ? 'yes' : 'no'}">${detected ? '✓ Detectado' : '✗ No detectado'} · ${(evidence * 100).toFixed(0)}%</b>
+            <b class="${detected ? 'yes' : 'no'}">${statusText}</b>
           </div>`;
       }).join('')}
     `;
@@ -920,11 +1192,255 @@ function renderCompliance(people) {
   $('globalCompliance').className = `compliance ${allComply ? 'pass' : 'fail'}`;
 }
 
+
+function safeFilePart(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 50);
+}
+
+function evidenceMetadata(people, now, fileName) {
+  return {
+    timestamp: now.toISOString(),
+    localTime: now.toLocaleString(),
+    fileName,
+    project: $('reportProject')?.value.trim() || '',
+    area: $('reportArea')?.value.trim() || '',
+    owner: $('reportOwner')?.value.trim() || '',
+    source: $('sourceLabel')?.textContent || '',
+    model: modelLabel(currentModelKey),
+    inputSize: state.inputSize,
+    provider: $('provider')?.textContent || '',
+    fps: Number(currentFps.toFixed(1)),
+    ips: Number(currentIps.toFixed(1)),
+    latencyMs: Number(lastLatencyMs.toFixed(1)),
+    people: people.map(person => ({
+      id: person.id,
+      compliance: person.ok ? 'CUMPLE' : 'NO CUMPLE',
+      missing: person.missing.map(id => metadata.classes[id]),
+      detected: [...state.required]
+        .filter(id => person.epp.has(id))
+        .map(id => metadata.classes[id])
+    })),
+    roi: state.roi ? { ...state.roi } : null
+  };
+}
+
+async function buildEvidenceBlob(people, now, fileName) {
+  const [sourceWidth, sourceHeight] = sourceDimensions();
+  const source = sourceObject();
+  if (!source || !sourceWidth || !sourceHeight) {
+    throw new Error('No hay una fuente activa para capturar.');
+  }
+
+  const maxWidth = 1280;
+  const scale = Math.min(1, maxWidth / sourceWidth);
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
+
+  const evidenceCanvas = document.createElement('canvas');
+  evidenceCanvas.width = width;
+  evidenceCanvas.height = height;
+  const ectx = evidenceCanvas.getContext('2d', { alpha: false });
+
+  ectx.drawImage(source, 0, 0, width, height);
+
+  if (canvas.width && canvas.height) {
+    ectx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, width, height);
+  }
+
+  if (roiCanvas.width && roiCanvas.height) {
+    ectx.drawImage(roiCanvas, 0, 0, roiCanvas.width, roiCanvas.height, 0, 0, width, height);
+  }
+
+  const nonCompliant = people.filter(person => !person.ok);
+  const missing = [...new Set(
+    nonCompliant.flatMap(person => person.missing.map(id => metadata.classes[id]))
+  )];
+
+  const fontSize = Math.max(16, Math.round(width / 55));
+  const lineHeight = fontSize + 8;
+  const lines = [
+    `NO CUMPLE · ${now.toLocaleString()}`,
+    `Personas: ${nonCompliant.map(p => p.id).join(', ') || '—'}`,
+    `Faltante: ${missing.join(', ') || '—'}`
+  ];
+
+  const boxHeight = lineHeight * lines.length + 16;
+  ectx.fillStyle = 'rgba(120, 0, 15, 0.86)';
+  ectx.fillRect(0, height - boxHeight, width, boxHeight);
+  ectx.fillStyle = '#ffffff';
+  ectx.font = `700 ${fontSize}px system-ui`;
+  ectx.textBaseline = 'top';
+
+  lines.forEach((line, index) => {
+    ectx.fillText(line, 12, height - boxHeight + 8 + index * lineHeight);
+  });
+
+  const quality = Math.min(0.95, Math.max(0.55, Number(state.evidenceQuality) || 0.82));
+
+  const blob = await new Promise((resolve, reject) => {
+    evidenceCanvas.toBlob(
+      value => value ? resolve(value) : reject(new Error('No se pudo generar la fotografía JPEG.')),
+      'image/jpeg',
+      quality
+    );
+  });
+
+  return blob;
+}
+
+async function uploadEvidence(blob, meta) {
+  const endpoint = String(state.evidenceEndpoint || '').trim();
+  if (!endpoint) return { uploaded: false, response: null };
+
+  const form = new FormData();
+  form.append('image', blob, meta.fileName);
+  form.append('metadata', JSON.stringify(meta));
+  form.append('timestamp', meta.timestamp);
+  form.append('project', meta.project);
+  form.append('area', meta.area);
+  form.append('owner', meta.owner);
+  if (state.evidenceApiKey) {
+    form.append('api_key', state.evidenceApiKey);
+  }
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    body: form,
+    cache: 'no-store'
+  });
+
+  if (!response.ok) {
+    throw new Error(`Servidor respondió HTTP ${response.status}`);
+  }
+
+  let responseData = null;
+  try {
+    responseData = await response.json();
+  } catch (_) {
+    responseData = await response.text().catch(() => '');
+  }
+
+  return { uploaded: true, response: responseData };
+}
+
+async function captureEvidence(people = lastPeople, { force = false } = {}) {
+  if (evidenceBusy) return false;
+
+  const nonCompliant = people.filter(person => !person.ok);
+  if (!nonCompliant.length) {
+    $('evidenceStatus').textContent = 'No hay una persona en estado NO CUMPLE.';
+    return false;
+  }
+
+  const now = new Date();
+  const nowMs = now.getTime();
+
+  if (!force) {
+    if (!state.evidenceEnabled) return false;
+    const cooldown = Math.max(5000, Number(state.evidenceCooldownMs) || 30000);
+    if (nowMs - lastEvidenceAt < cooldown) return false;
+  }
+
+  evidenceBusy = true;
+  lastEvidenceAt = nowMs;
+
+  const project = safeFilePart($('reportProject')?.value) || 'proyecto';
+  const timePart = now.toISOString().replaceAll(':', '-').replaceAll('.', '-');
+  const fileName = `epp_no_cumple_${project}_${timePart}.jpg`;
+
+  $('evidenceStatus').textContent = 'Generando evidencia...';
+
+  try {
+    const blob = await buildEvidenceBlob(nonCompliant, now, fileName);
+    lastEvidenceBlob = blob;
+    lastEvidenceFileName = fileName;
+    $('downloadEvidenceBtn').disabled = false;
+
+    const meta = evidenceMetadata(nonCompliant, now, fileName);
+    let uploadInfo = { uploaded: false, response: null };
+
+    if (String(state.evidenceEndpoint || '').trim()) {
+      $('evidenceStatus').textContent = 'Enviando fotografía al servidor...';
+      uploadInfo = await uploadEvidence(blob, meta);
+    }
+
+    evidenceEvents.push({
+      ...meta,
+      uploaded: uploadInfo.uploaded,
+      serverResponse: uploadInfo.response || null,
+      bytes: blob.size
+    });
+
+    localStorage.setItem(
+      'eppEvidenceEvents',
+      JSON.stringify(evidenceEvents.slice(-250))
+    );
+
+    $('evidenceStatus').textContent = uploadInfo.uploaded
+      ? `Evidencia enviada · ${now.toLocaleTimeString()}`
+      : `Evidencia capturada · ${now.toLocaleTimeString()} · lista para descargar`;
+
+    return true;
+  } catch (error) {
+    $('evidenceStatus').textContent = `Error de evidencia: ${error.message}`;
+    console.error(error);
+    return false;
+  } finally {
+    evidenceBusy = false;
+  }
+}
+
+function downloadLastEvidence() {
+  if (!lastEvidenceBlob || !lastEvidenceFileName) {
+    $('evidenceStatus').textContent = 'Aún no existe una evidencia para descargar.';
+    return;
+  }
+
+  const url = URL.createObjectURL(lastEvidenceBlob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = lastEvidenceFileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function updateAcquisitionClock() {
+  const label = $('sampleCountdownLabel');
+  if (!label) return;
+
+  const intervalMs = Math.max(1000, Number(state.reportSampleIntervalMs) || 5000);
+  const intervalSec = Math.round(intervalMs / 1000);
+
+  if (!running) {
+    label.textContent = `Tiempo configurado: cada ${intervalSec} s · en espera de una fuente.`;
+    return;
+  }
+
+  if (!lastReportSampleAt) {
+    label.textContent = `Tiempo configurado: cada ${intervalSec} s · próxima toma: inmediata.`;
+    return;
+  }
+
+  const remainingMs = Math.max(0, intervalMs - (Date.now() - lastReportSampleAt));
+  const remainingSec = remainingMs / 1000;
+  label.textContent =
+    `Tiempo configurado: cada ${intervalSec} s · próxima toma en ${remainingSec.toFixed(1)} s.`;
+}
+
+setInterval(updateAcquisitionClock, 250);
+
 function persistReportSession() {
   try {
     const compact = sessionLog.slice(-2000);
     localStorage.setItem('eppSessionLog', JSON.stringify(compact));
     localStorage.setItem('eppReportStartedAt', reportStartedAt.toISOString());
+    localStorage.setItem('eppEvidenceEvents', JSON.stringify(evidenceEvents.slice(-250)));
   } catch (error) {
     console.warn('No se pudo persistir el reporte en el navegador:', error);
   }
@@ -932,47 +1448,95 @@ function persistReportSession() {
 
 function updateReportStats(people) {
   const nowMs = Date.now();
-  if (nowMs - lastReportSampleAt < 1000) return;
+  const intervalMs = Math.max(1000, Number(state.reportSampleIntervalMs) || 5000);
+  if (nowMs - lastReportSampleAt < intervalMs) return;
+
   lastReportSampleAt = nowMs;
   const now = new Date();
+  const intervalSec = Math.round(intervalMs / 1000);
+  const sampleId = ++sampleSequence;
 
   for (const person of people) {
     let stat = personStats.get(person.id);
     if (!stat) {
-      stat = { id: person.id, firstSeen: now.toISOString(), lastSeen: now.toISOString(), samples: 0, compliantSamples: 0, nonCompliantSamples: 0 };
+      stat = {
+        id: person.id,
+        firstSeen: now.toISOString(),
+        lastSeen: now.toISOString(),
+        samples: 0,
+        compliantSamples: 0,
+        nonCompliantSamples: 0
+      };
       personStats.set(person.id, stat);
     }
+
     stat.lastSeen = now.toISOString();
     stat.samples += 1;
     if (person.ok) stat.compliantSamples += 1;
     else stat.nonCompliantSamples += 1;
 
     sessionLog.push({
+      sampleId,
       timestamp: now.toISOString(),
+      localTime: now.toLocaleString(),
+      sampleIntervalSec: intervalSec,
       source: $('sourceLabel').textContent,
       personId: person.id,
       compliance: person.ok ? 'CUMPLE' : 'NO CUMPLE',
-      detected: [...state.required].filter(id => person.epp.has(id)).map(id => metadata.classes[id]),
+      detected: [...state.required]
+        .filter(id => person.epp.has(id))
+        .map(id => metadata.classes[id]),
       missing: person.missing.map(id => metadata.classes[id]),
       fps: Number(currentFps.toFixed(1)),
+      ips: Number(currentIps.toFixed(1)),
       latencyMs: Number(lastLatencyMs.toFixed(1)),
+      pipelineMs: Number(lastPipelineMs.toFixed(1)),
       detections: lastBoxes.length,
+      provider: $('provider')?.textContent || '',
+      model: modelLabel(currentModelKey),
+      inputSize: state.inputSize,
       roi: state.roi ? { ...state.roi } : null
     });
   }
 
   if (!people.length) {
     sessionLog.push({
-      timestamp: now.toISOString(), source: $('sourceLabel').textContent, personId: '', compliance: 'SIN PERSONAS',
-      detected: [], missing: [], fps: Number(currentFps.toFixed(1)), latencyMs: Number(lastLatencyMs.toFixed(1)),
-      detections: lastBoxes.length, roi: state.roi ? { ...state.roi } : null
+      sampleId,
+      timestamp: now.toISOString(),
+      localTime: now.toLocaleString(),
+      sampleIntervalSec: intervalSec,
+      source: $('sourceLabel').textContent,
+      personId: '',
+      compliance: 'SIN PERSONAS',
+      detected: [],
+      missing: [],
+      fps: Number(currentFps.toFixed(1)),
+      ips: Number(currentIps.toFixed(1)),
+      latencyMs: Number(lastLatencyMs.toFixed(1)),
+      pipelineMs: Number(lastPipelineMs.toFixed(1)),
+      detections: lastBoxes.length,
+      provider: $('provider')?.textContent || '',
+      model: modelLabel(currentModelKey),
+      inputSize: state.inputSize,
+      roi: state.roi ? { ...state.roi } : null
     });
   }
 
-  $('reportEventsBadge').textContent = `Registro automático · ${sessionLog.length}`;
+  $('reportEventsBadge').textContent =
+    `Registro · cada ${intervalSec} s · ${sessionLog.length}`;
+
   $('reportEventsBadge').className = 'badge pass';
-  $('lastRecordLabel').textContent = `Último registro: ${now.toLocaleTimeString()}.`;
+  $('lastRecordLabel').textContent =
+    `Última toma: ${now.toLocaleTimeString()} · muestra #${sampleId}.`;
+
   persistReportSession();
+
+  // La fotografía corre fuera del ciclo de inferencia para no frenar la IA.
+  if (state.evidenceEnabled && people.some(person => !person.ok)) {
+    setTimeout(() => {
+      captureEvidence(people, { force: false }).catch(console.error);
+    }, 0);
+  }
 }
 
 async function processCurrentFrame() {
@@ -1041,6 +1605,7 @@ async function inferenceLoop() {
     return;
   }
 
+  const loopStart = performance.now();
   inferenceBusy = true;
   try {
     const detections = await infer();
@@ -1060,9 +1625,11 @@ async function inferenceLoop() {
   }
   inferenceBusy = false;
 
-  // "Procesar cada" ahora actúa como una pequeña pausa entre inferencias en lugar
-  // de apagar el overlay entre frames.
-  const delay = Math.max(0, (state.skip - 1) * 16);
+  // Ritmo de IA: 0 = máxima velocidad. En otros modos se completa
+  // el periodo objetivo contando también el tiempo real de inferencia.
+  const elapsed = performance.now() - loopStart;
+  const targetPeriod = Math.max(0, Number(state.inferenceMinIntervalMs) || 0);
+  const delay = Math.max(0, targetPeriod - elapsed);
   setTimeout(inferenceLoop, delay);
 }
 
@@ -1144,7 +1711,7 @@ roiCanvas.addEventListener('pointerup', event => {
       x1: Math.min(draft.x1, draft.x2), y1: Math.min(draft.y1, draft.y2),
       x2: Math.max(draft.x1, draft.x2), y2: Math.max(draft.y1, draft.y2)
     };
-    resetTracking();
+    resetTracking('ROI modificado');
     updateRoiUi();
     setStatus('ROI aplicado. La zona azul permanecerá marcada y solo esa región será analizada.');
   } else {
@@ -1161,7 +1728,7 @@ function clearRoi() {
   roiDraft = null;
   finishRoiSelection();
   drawRoi(...sourceDimensions());
-  resetTracking();
+  resetTracking('ROI eliminado');
   updateRoiUi();
   drawRoi(...sourceDimensions());
   render(lastBoxes, lastPeople);
@@ -1182,6 +1749,10 @@ function reportMeta() {
     iouNms: state.iou,
     inputSize: state.inputSize,
     performanceMode: state.performanceMode,
+    reportSampleIntervalSec: Math.round(state.reportSampleIntervalMs / 1000),
+    inferenceMinIntervalMs: state.inferenceMinIntervalMs,
+    evidenceEnabled: state.evidenceEnabled,
+    evidenceCooldownSec: Math.round(state.evidenceCooldownMs / 1000),
     roi: state.roi
   };
 }
@@ -1199,6 +1770,7 @@ function reportSummary() {
     fps: Number(currentFps.toFixed(1)),
     ips: Number(currentIps.toFixed(1)),
     latencyMs: Number(lastLatencyMs.toFixed(1)),
+    pipelineMs: Number(lastPipelineMs.toFixed(1)),
     detections: lastBoxes.length
   };
 }
@@ -1211,7 +1783,8 @@ function reportPayload() {
       ...stat,
       complianceRate: stat.samples ? Number((100 * stat.compliantSamples / stat.samples).toFixed(1)) : 0
     })),
-    records: sessionLog
+    records: sessionLog,
+    evidence: evidenceEvents
   };
 }
 
@@ -1234,7 +1807,12 @@ function csvCell(value) {
 }
 
 function downloadCsv() {
-  const header = ['timestamp','source','personId','compliance','detected','missing','fps','latencyMs','detections'];
+  const header = [
+    'sampleId','timestamp','localTime','sampleIntervalSec',
+    'source','personId','compliance','detected','missing',
+    'fps','ips','latencyMs','pipelineMs','detections',
+    'provider','model','inputSize'
+  ];
   const lines = [header.join(',')];
   for (const row of sessionLog) {
     lines.push(header.map(key => csvCell(row[key])).join(','));
@@ -1281,10 +1859,21 @@ function clearReport() {
   personStats.clear();
   reportStartedAt = new Date();
   lastReportSampleAt = 0;
-  $('reportEventsBadge').textContent = 'Registro automático · 0';
+  sampleSequence = 0;
+  evidenceEvents.length = 0;
+  lastEvidenceAt = 0;
+  lastEvidenceBlob = null;
+  lastEvidenceFileName = '';
+  $('reportEventsBadge').textContent =
+    `Registro · cada ${Math.round(state.reportSampleIntervalMs / 1000)} s · 0`;
   $('lastRecordLabel').textContent = 'Aún sin muestras.';
+  $('downloadEvidenceBtn').disabled = true;
+  $('evidenceStatus').textContent = state.evidenceEnabled
+    ? 'Captura automática activa.'
+    : 'Captura desactivada.';
   localStorage.removeItem('eppSessionLog');
   localStorage.removeItem('eppReportStartedAt');
+  localStorage.removeItem('eppEvidenceEvents');
   setStatus('Registros del reporte reiniciados.');
 }
 
@@ -1296,14 +1885,20 @@ async function sendThingSpeak() {
   }
   localStorage.setItem('eppThingSpeakKey', key);
   const s = reportSummary();
+  const compliancePct = s.currentPersons
+    ? Number((100 * s.compliantNow / s.currentPersons).toFixed(1))
+    : 0;
+
   const params = new URLSearchParams({
     api_key: key,
     field1: String(s.currentPersons),
     field2: String(s.compliantNow),
     field3: String(s.nonCompliantNow),
-    field4: String(s.fps),
-    field5: String(s.latencyMs),
-    field6: String(s.detections)
+    field4: String(s.latencyMs),
+    field5: String(s.ips),
+    field6: String(s.detections),
+    field7: String(s.fps),
+    field8: String(compliancePct)
   });
   $('iotStatus').textContent = 'Enviando...';
   try {
@@ -1356,7 +1951,14 @@ $('iouRange').oninput = event => {
 };
 
 $('frameSkip').onchange = event => {
-  state.skip = Number(event.target.value);
+  state.inferenceMinIntervalMs = Number(event.target.value) || 0;
+  localStorage.setItem(
+    'eppInferenceMinIntervalMs',
+    String(state.inferenceMinIntervalMs)
+  );
+
+  const label = event.target.selectedOptions[0]?.textContent || '';
+  setStatus(`Ritmo de IA: ${label}.`);
 };
 
 $('modelSelect').onchange = event => {
@@ -1395,8 +1997,64 @@ $('downloadCsvBtn').onclick = downloadCsv;
 $('downloadJsonBtn').onclick = downloadJson;
 $('printReportBtn').onclick = printReport;
 $('clearReportBtn').onclick = clearReport;
+$('reportSampleInterval').onchange = event => {
+  const seconds = Math.max(1, Number(event.target.value) || 5);
+  state.reportSampleIntervalMs = seconds * 1000;
+  lastReportSampleAt = 0;
+
+  localStorage.setItem('eppReportSampleIntervalSec', String(seconds));
+
+  $('reportEventsBadge').textContent =
+    `Registro · cada ${seconds} s · ${sessionLog.length}`;
+
+  updateAcquisitionClock();
+  setStatus(`Tiempo entre tomas de datos: ${seconds} s.`);
+};
+
+
+$('evidenceEnabled').onchange = event => {
+  state.evidenceEnabled = Boolean(event.target.checked);
+  localStorage.setItem('eppEvidenceEnabled', state.evidenceEnabled ? '1' : '0');
+  $('evidenceStatus').textContent = state.evidenceEnabled
+    ? 'Captura automática activa para NO CUMPLE.'
+    : 'Captura desactivada.';
+};
+
+$('evidenceCooldown').onchange = event => {
+  const seconds = Math.max(5, Number(event.target.value) || 30);
+  state.evidenceCooldownMs = seconds * 1000;
+  localStorage.setItem('eppEvidenceCooldownSec', String(seconds));
+};
+
+$('evidenceQuality').onchange = event => {
+  state.evidenceQuality = Math.min(0.95, Math.max(0.55, Number(event.target.value) || 0.82));
+  localStorage.setItem('eppEvidenceQuality', String(state.evidenceQuality));
+};
+
+$('evidenceEndpoint').onchange = event => {
+  state.evidenceEndpoint = event.target.value.trim();
+  localStorage.setItem('eppEvidenceEndpoint', state.evidenceEndpoint);
+};
+
+$('evidenceApiKey').onchange = event => {
+  state.evidenceApiKey = event.target.value.trim();
+  localStorage.setItem('eppEvidenceApiKey', state.evidenceApiKey);
+};
+
+$('captureEvidenceBtn').onclick = () => {
+  captureEvidence(lastPeople, { force: true }).catch(console.error);
+};
+
+$('downloadEvidenceBtn').onclick = downloadLastEvidence;
+
 $('sendThingSpeakBtn').onclick = sendThingSpeak;
-$('thingSpeakInterval').onchange = configureThingSpeakTimer;
+$('thingSpeakInterval').onchange = () => {
+  localStorage.setItem(
+    'eppThingSpeakIntervalSec',
+    $('thingSpeakInterval').value
+  );
+  configureThingSpeakTimer();
+};
 $('thingSpeakKey').value = localStorage.getItem('eppThingSpeakKey') || '';
 
 
@@ -1405,11 +2063,23 @@ function restoreReportSession() {
     const saved = JSON.parse(localStorage.getItem('eppSessionLog') || '[]');
     if (Array.isArray(saved) && saved.length) {
       sessionLog.push(...saved);
-      $('reportEventsBadge').textContent = `Registro automático · ${sessionLog.length}`;
+      const intervalSec = Math.round(state.reportSampleIntervalMs / 1000);
+      $('reportEventsBadge').textContent =
+        `Registro · cada ${intervalSec} s · ${sessionLog.length}`;
       $('lastRecordLabel').textContent = `Se restauraron ${sessionLog.length} registros del navegador.`;
     }
     const started = localStorage.getItem('eppReportStartedAt');
     if (started) reportStartedAt = new Date(started);
+
+    sampleSequence = sessionLog.reduce(
+      (maxValue, row) => Math.max(maxValue, Number(row.sampleId) || 0),
+      0
+    );
+
+    const savedEvidence = JSON.parse(localStorage.getItem('eppEvidenceEvents') || '[]');
+    if (Array.isArray(savedEvidence) && savedEvidence.length) {
+      evidenceEvents.push(...savedEvidence.slice(-250));
+    }
   } catch (error) {
     console.warn('No se pudo restaurar el reporte:', error);
   }
@@ -1418,11 +2088,75 @@ function restoreReportSession() {
 $('modelSelect').value = 'yolo11s_dataset15';
 currentModelKey = 'yolo11s_dataset15';
 $('activeModel').textContent = 'YOLO11s · Dataset 15 (pendiente)';
-$('resolutionSelect').value = '512';
+$('resolutionSelect').value = '480';
 $('performanceMode').value = state.performanceMode;
-state.inputSize = 512;
-$('inputSize').textContent = '512×512 (pendiente)';
+state.inputSize = 480;
+$('inputSize').textContent = '480×480 (pendiente)';
+
+const savedReportIntervalSec = Math.max(
+  1,
+  Number(localStorage.getItem('eppReportSampleIntervalSec') || 5)
+);
+state.reportSampleIntervalMs = savedReportIntervalSec * 1000;
+if ($('reportSampleInterval')) {
+  $('reportSampleInterval').value = String(savedReportIntervalSec);
+  $('reportEventsBadge').textContent =
+    `Registro · cada ${savedReportIntervalSec} s · 0`;
+}
+
+const savedInferenceMinIntervalMs = Math.max(
+  0,
+  Number(localStorage.getItem('eppInferenceMinIntervalMs') || 0)
+);
+state.inferenceMinIntervalMs = savedInferenceMinIntervalMs;
+if ($('frameSkip')) {
+  $('frameSkip').value = String(savedInferenceMinIntervalMs);
+}
+
+
+const savedEvidenceEnabled = localStorage.getItem('eppEvidenceEnabled') === '1';
+const savedEvidenceCooldownSec = Math.max(
+  5,
+  Number(localStorage.getItem('eppEvidenceCooldownSec') || 30)
+);
+const savedEvidenceQuality = Math.min(
+  0.95,
+  Math.max(0.55, Number(localStorage.getItem('eppEvidenceQuality') || 0.82))
+);
+
+state.evidenceEnabled = savedEvidenceEnabled;
+state.evidenceCooldownMs = savedEvidenceCooldownSec * 1000;
+state.evidenceQuality = savedEvidenceQuality;
+state.evidenceEndpoint = localStorage.getItem('eppEvidenceEndpoint') || '';
+state.evidenceApiKey = localStorage.getItem('eppEvidenceApiKey') || '';
+
+$('evidenceEnabled').checked = state.evidenceEnabled;
+$('evidenceCooldown').value = String(savedEvidenceCooldownSec);
+$('evidenceQuality').value = String(savedEvidenceQuality);
+$('evidenceEndpoint').value = state.evidenceEndpoint;
+$('evidenceApiKey').value = state.evidenceApiKey;
+$('evidenceStatus').textContent = state.evidenceEnabled
+  ? 'Captura automática activa para NO CUMPLE.'
+  : 'Captura desactivada.';
+
+const savedThingSpeakInterval = localStorage.getItem(
+  'eppThingSpeakIntervalSec'
+);
+if (savedThingSpeakInterval && $('thingSpeakInterval')) {
+  $('thingSpeakInterval').value = savedThingSpeakInterval;
+}
+configureThingSpeakTimer();
+
 restoreReportSession();
+updateAcquisitionClock();
 updateRoiUi();
 
 loadMetadata().catch(error => setStatus(error.message));
+
+window.addEventListener('beforeunload', () => {
+  if (session && typeof session.release === 'function') {
+    try {
+      session.release();
+    } catch (_) {}
+  }
+});
