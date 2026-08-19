@@ -1,0 +1,26 @@
+EPP Guard v12 - Administrador + Monitor + Android/iOS
+
+Reemplazar/agregar en GitHub:
+- index.html
+- css/styles.css
+- js/app.js
+- manifest.webmanifest
+
+Primera apertura:
+1. Crear PIN administrador (4-8 dígitos).
+2. Configurar empresa, área, EPP, cámara, IA, adquisición y ThingSpeak.
+3. Guardar configuración.
+4. Iniciar sistema.
+
+Modo Monitor:
+- Solo cámara + CUMPLE / NO CUMPLE + EPP configurados.
+- Configuración protegida por PIN.
+- Botón para cambiar de cámara.
+
+Perfiles:
+- PC con WebGPU: YOLO11s 480, alta velocidad.
+- Android con WebGPU: YOLO11s 480, cámara 960x540.
+- Android sin WebGPU: WASM, cámara 640x480, ritmo limitado.
+- iPhone/iPad: runtime WASM puro, 640x480, 15 FPS, inferencia limitada.
+
+Nota: la estabilidad definitiva de iPhone mejorará al integrar YOLO11n 320/416 cuando termine su entrenamiento.

@@ -2,50 +2,94 @@
 <html lang="es">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
   <meta name="theme-color" content="#07111f">
-  <title>Detección EPP en tiempo real</title>
-  <link rel="stylesheet" href="css/styles.css">
-  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@dev/dist/ort.webgpu.min.js"></script>
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>EPP Guard · Monitoreo inteligente</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="css/styles.css?v=12">
+  <script>
+    window.__EPP_BOOT__ = (() => {
+      const ua = navigator.userAgent;
+      const isIOS = /iPad|iPhone|iPod/.test(ua) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      const isAndroid = /Android/i.test(ua);
+      return { isIOS, isAndroid };
+    })();
+
+    // iOS carga el runtime WASM puro. Android/PC cargan el bundle WebGPU,
+    // que conserva fallback WASM cuando navigator.gpu no está disponible.
+    window.__ORT_READY__ = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = window.__EPP_BOOT__.isIOS
+        ? 'https://cdn.jsdelivr.net/npm/onnxruntime-web@dev/dist/ort.min.js'
+        : 'https://cdn.jsdelivr.net/npm/onnxruntime-web@dev/dist/ort.webgpu.min.js';
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('No se pudo cargar ONNX Runtime Web.'));
+      document.head.appendChild(script);
+    });
+  </script>
 </head>
-<body>
-<header>
+<body class="monitor-mode">
+
+<div id="authOverlay" class="auth-overlay hidden">
+  <section class="auth-card">
+    <div class="auth-brand">EPP GUARD</div>
+    <div id="firstRunPanel" class="hidden">
+      <h2>Crear administrador</h2>
+      <p>Configure un PIN local para proteger la estación.</p>
+      <label>PIN de 4 a 8 dígitos<input id="setupPin" type="password" inputmode="numeric" maxlength="8" autocomplete="new-password"></label>
+      <label>Confirmar PIN<input id="setupPinConfirm" type="password" inputmode="numeric" maxlength="8" autocomplete="new-password"></label>
+      <button id="createAdminBtn" class="primary wide">Crear administrador</button>
+    </div>
+    <div id="unlockPanel" class="hidden">
+      <h2>Administrador</h2>
+      <p>Ingrese el PIN para modificar la configuración.</p>
+      <label>PIN<input id="unlockPin" type="password" inputmode="numeric" maxlength="8" autocomplete="current-password"></label>
+      <button id="unlockAdminBtn" class="primary wide">Desbloquear</button>
+      <button id="cancelUnlockBtn" class="ghost wide">Cancelar</button>
+    </div>
+    <p id="authError" class="auth-error"></p>
+  </section>
+</div>
+
+<header class="app-header">
   <div>
-    <h1>DETECCIÓN INTELIGENTE DE EPP</h1>
-    <p>Seguimiento por persona · ROI · Cumplimiento · Reportes · YOLO + ONNX Runtime Web</p>
+    <div class="eyebrow">SEGURIDAD INDUSTRIAL · VISIÓN ARTIFICIAL</div>
+    <h1>EPP GUARD</h1>
+    <p id="headerSubtitle">Monitoreo inteligente de equipos de protección personal</p>
   </div>
-  <div id="engineBadge" class="badge neutral">Motor: sin iniciar</div>
+  <div class="header-actions">
+    <span id="engineBadge" class="badge neutral">Motor: sin iniciar</span>
+    <button id="installAppBtn" class="ghost">Instalar</button>
+    <button id="adminAccessBtn" class="icon-button" aria-label="Administrador">⚙ Administrador</button>
+  </div>
 </header>
 
-<section class="instructions-shell">
-  <details class="card instructions" open>
-    <summary>Instrucciones de uso</summary>
-    <ol>
-      <li><b>Seleccione el modelo y resolución:</b> elija YOLO11s anterior, YOLO11s Dataset 15 o YOLO11m Dataset 15; después seleccione 640, 512 o 480 y pulse <b>Cargar modelo</b>.</li>
-      <li><b>Seleccione los EPP obligatorios:</b> marque casco, chaleco, gafas, guantes, botas u otras clases que deban intervenir en el cumplimiento.</li>
-      <li><b>Opcional — seleccione un ROI:</b> pulse <b>Seleccionar ROI</b> y arrastre un rectángulo sobre el área que desea vigilar. La IA ignorará el resto de la imagen.</li>
-      <li><b>Seleccione la fuente:</b> cámara, video o imagen. Las personas reciben un ID de seguimiento y el estado de cumplimiento se estabiliza durante varios fotogramas.</li>
-      <li><b>Genere el reporte:</b> complete los datos de sesión y descargue CSV/JSON, imprima a PDF o envíe un resumen a ThingSpeak.</li>
-    </ol>
-  </details>
-</section>
-
-<main class="dashboard">
-  <div class="left-column">
-    <section class="viewer-panel">
+<main class="app-shell">
+  <section class="live-layout">
+    <div class="viewer-panel">
       <div id="stage">
         <video id="video" muted playsinline></video>
         <canvas id="imageCanvas" class="media-canvas hidden"></canvas>
         <canvas id="canvas" class="overlay-canvas"></canvas>
         <canvas id="roiCanvas" class="roi-canvas"></canvas>
-        <div class="hud">
+        <div class="hud admin-only-inline">
           <span id="sourceLabel">Sin fuente</span>
           <span class="hud-right"><span id="roiStatus" class="roi-status">ROI: COMPLETO</span><span id="fpsLabel">0 FPS</span></span>
         </div>
-        <div id="roiHint" class="roi-hint hidden">Arrastre sobre el video para definir el ROI</div>
+        <div id="roiHint" class="roi-hint hidden">Arrastre para definir el área de monitoreo</div>
       </div>
 
-      <div class="controls">
+      <div id="monitorLiveControls" class="controls monitor-controls">
+        <button id="monitorStartBtn" class="primary jumbo">▶ Iniciar monitoreo</button>
+        <button id="switchCameraBtn">↻ Cambiar cámara</button>
+        <button id="monitorStopBtn">Detener</button>
+      </div>
+
+      <div id="adminLiveControls" class="controls hidden">
         <button id="cameraBtn" class="primary">Iniciar cámara</button>
         <label class="button">Abrir video<input id="videoInput" type="file" accept="video/*" hidden></label>
         <label class="button">Abrir imagen<input id="imageInput" type="file" accept="image/*" hidden></label>
@@ -53,213 +97,136 @@
         <button id="clearRoiBtn">Quitar ROI</button>
         <button id="stopBtn">Detener</button>
       </div>
-      <p id="status">Primero pulse <b>Cargar modelo</b>. Luego seleccione cámara, video o imagen.</p>
+      <p id="status">Sistema preparado. Inicie el monitoreo.</p>
+    </div>
+
+    <section id="monitorView" class="monitor-panel">
+      <div class="monitor-identity">
+        <span id="monitorCompany">Sistema de seguridad EPP</span>
+        <b id="monitorArea">Área sin configurar</b>
+      </div>
+      <div id="monitorCompliance" class="monitor-compliance neutral">EN ESPERA</div>
+      <p id="monitorDetail" class="monitor-detail">Ubíquese dentro del área de detección.</p>
+      <div id="monitorRequired" class="monitor-required"></div>
+      <div class="privacy-note">Procesamiento local · Las imágenes no salen del dispositivo salvo que el administrador active evidencias.</div>
     </section>
+  </section>
 
-    <section class="card configuration-card">
-      <h2>Configuración de detección</h2>
-      <div class="configuration-grid performance-grid">
-        <div class="field">
-          <label>Confianza <output id="confOut">0.35</output></label>
-          <input id="confRange" type="range" min="0.10" max="0.90" step="0.05" value="0.35">
-        </div>
-        <div class="field">
-          <label>IoU NMS <output id="iouOut">0.45</output></label>
-          <input id="iouRange" type="range" min="0.10" max="0.90" step="0.05" value="0.45">
-        </div>
-        <div class="field">
-          <label>Resolución de inferencia</label>
-          <select id="resolutionSelect">
-            <option value="640">640 × 640 · Máxima precisión</option>
-            <option value="512" selected>512 × 512 · Equilibrado</option>
-            <option value="480">480 × 480 · Más rápido</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>Modo rendimiento</label>
-          <select id="performanceMode">
-            <option value="manual">Manual</option>
-            <option value="auto" selected>Automático</option>
-          </select>
-        </div>
-        <div class="field frame-field">
-          <label>Ritmo de IA</label>
-          <select id="frameSkip">
-            <option value="0" selected>Máxima velocidad</option>
-            <option value="200">Objetivo 5 IPS</option>
-            <option value="250">Objetivo 4 IPS</option>
-            <option value="333">Objetivo 3 IPS</option>
-            <option value="500">Objetivo 2 IPS</option>
-          </select>
-        </div>
+  <section id="adminView" class="admin-view hidden">
+    <div class="admin-toolbar">
+      <div>
+        <span class="eyebrow">PANEL PROTEGIDO</span>
+        <h2>Configuración de la estación</h2>
+        <p id="configState">Cambios pendientes</p>
       </div>
-      <p class="hint"><b>Modo automático:</b> intenta mantener buena fluidez cambiando entre 640, 512 y 480 según la latencia. Requiere los tres modelos ONNX. El tracker permanece activo entre inferencias para conservar las cajas.</p>
-    </section>
-
-    <section class="card report-card">
-      <div class="section-title">
-        <h2>Reporte de monitoreo</h2>
-        <span id="reportEventsBadge" class="badge pass">Registro · cada 5 s · 0</span>
-      </div>
-
-      <div class="report-fields">
-        <div class="field"><label>Proyecto / obra</label><input id="reportProject" type="text" placeholder="Ej. Obra Riobamba"></div>
-        <div class="field"><label>Área / frente de trabajo</label><input id="reportArea" type="text" placeholder="Ej. Frente A"></div>
-        <div class="field"><label>Responsable</label><input id="reportOwner" type="text" placeholder="Nombre del responsable"></div>
-
-        <div class="field">
-          <label>Tiempo entre tomas de datos</label>
-          <select id="reportSampleInterval">
-            <option value="1">Cada 1 segundo</option>
-            <option value="2">Cada 2 segundos</option>
-            <option value="5" selected>Cada 5 segundos</option>
-            <option value="10">Cada 10 segundos</option>
-            <option value="15">Cada 15 segundos</option>
-            <option value="30">Cada 30 segundos</option>
-            <option value="60">Cada 1 minuto</option>
-            <option value="120">Cada 2 minutos</option>
-            <option value="300">Cada 5 minutos</option>
-          </select>
-        </div>
-      </div>
-
-      <p class="hint report-live">
-        <b>Adquisición automática:</b>
-        <span id="sampleCountdownLabel">Próxima toma: al iniciar una fuente.</span>
-        <span id="lastRecordLabel">Aún sin muestras.</span>
-      </p>
-
-      <details class="iot-box">
-        <summary>Evidencia fotográfica de incumplimiento (opcional)</summary>
-        <div class="report-fields">
-          <div class="field">
-            <label>Captura automática</label>
-            <label><input id="evidenceEnabled" type="checkbox"> Activar solo cuando exista NO CUMPLE</label>
-          </div>
-
-          <div class="field">
-            <label>Tiempo mínimo entre fotografías</label>
-            <select id="evidenceCooldown">
-              <option value="5">5 segundos</option>
-              <option value="15">15 segundos</option>
-              <option value="30" selected>30 segundos</option>
-              <option value="60">1 minuto</option>
-              <option value="120">2 minutos</option>
-              <option value="300">5 minutos</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label>Calidad JPEG</label>
-            <select id="evidenceQuality">
-              <option value="0.70">70 % · Menor tamaño</option>
-              <option value="0.82" selected>82 % · Equilibrado</option>
-              <option value="0.92">92 % · Alta calidad</option>
-            </select>
-          </div>
-
-          <div class="field">
-            <label>URL del servidor de evidencias</label>
-            <input id="evidenceEndpoint" type="url" placeholder="https://servidor.com/api/epp/evidence">
-          </div>
-
-          <div class="field">
-            <label>API Key / token del servidor</label>
-            <input id="evidenceApiKey" type="password" autocomplete="off" placeholder="Opcional">
-          </div>
-        </div>
-
-        <p class="hint">La fotografía incluye la imagen, cajas de detección, ROI, fecha/hora y personas en incumplimiento. Si no configura servidor, la última evidencia queda disponible para descarga manual.</p>
-
-        <div class="row-actions">
-          <button id="captureEvidenceBtn">Capturar evidencia ahora</button>
-          <button id="downloadEvidenceBtn" disabled>Descargar última evidencia</button>
-          <span id="evidenceStatus" class="hint">Captura desactivada.</span>
-        </div>
-      </details>
-
       <div class="row-actions">
-        <button id="downloadCsvBtn" class="primary">Descargar CSV</button>
-        <button id="downloadJsonBtn">Descargar JSON</button>
-        <button id="printReportBtn">Imprimir / PDF</button>
-        <button id="clearReportBtn">Limpiar registros</button>
+        <button id="saveConfigBtn" class="primary">Guardar configuración</button>
+        <button id="startInstalledBtn">Iniciar sistema</button>
+        <button id="lockAdminBtn" class="danger-outline">Bloquear administrador</button>
       </div>
+    </div>
 
-      <details class="iot-box">
-        <summary>Enviar resumen a ThingSpeak</summary>
-        <p class="hint">La clave se guarda solo en este navegador. No la incluya directamente en el repositorio público.</p>
-        <div class="report-fields">
-          <div class="field"><label>Write API Key</label><input id="thingSpeakKey" type="password" autocomplete="off" placeholder="Write API Key"></div>
-          <div class="field"><label>Intervalo de envío</label>
-            <select id="thingSpeakInterval">
-              <option value="0">Solo manual</option>
-              <option value="15">Cada 15 s</option>
-              <option value="30">Cada 30 s</option>
-              <option value="60">Cada 60 s</option>
-              <option value="120">Cada 2 min</option>
-              <option value="300">Cada 5 min</option>
-            </select>
-          </div>
+    <div class="admin-grid">
+      <section class="card">
+        <h3>1 · Identificación</h3>
+        <div class="report-fields two">
+          <div class="field"><label>Empresa / fábrica</label><input id="reportProject" type="text" placeholder="Ej. Planta Riobamba"></div>
+          <div class="field"><label>Área / frente</label><input id="reportArea" type="text" placeholder="Ej. Producción A"></div>
+          <div class="field"><label>Responsable de seguridad</label><input id="reportOwner" type="text" placeholder="Nombre del responsable"></div>
         </div>
-        <div class="row-actions">
-          <button id="sendThingSpeakBtn">Enviar ahora</button>
-          <span id="iotStatus" class="hint">Sin envíos.</span>
-        </div>
-        <p class="hint">Campos: 1=personas, 2=cumplen, 3=no cumplen, 4=latencia ms, 5=IPS, 6=detecciones, 7=FPS, 8=% cumplimiento.</p>
-      </details>
-    </section>
-  </div>
+      </section>
 
-  <aside class="right-column">
-    <section class="card">
-      <h2>Modelo</h2>
-      <div class="field">
-        <label>Modelo disponible</label>
-        <select id="modelSelect">
+      <section class="card">
+        <div class="section-title"><h3>2 · Cámara</h3><span id="cameraCount" class="badge neutral">0 cámaras</span></div>
+        <div class="field"><label>Cámara instalada</label><select id="cameraSelect"><option value="">Cámara predeterminada</option></select></div>
+        <div class="row-actions"><button id="refreshCamerasBtn">Detectar cámaras</button><button id="testCameraBtn">Probar cámara</button></div>
+        <p class="hint">En Android, iPhone y equipos con varias cámaras podrá seleccionar la cámara expuesta por el navegador.</p>
+      </section>
+
+      <section class="card">
+        <h3>3 · EPP obligatorios</h3>
+        <p class="hint">Solo estos elementos determinan CUMPLE / NO CUMPLE.</p>
+        <div id="requiredClasses" class="checks"></div>
+      </section>
+
+      <section class="card">
+        <h3>4 · Modelo y detección</h3>
+        <div class="field"><label>Modelo</label><select id="modelSelect">
           <option value="yolo11s_previous">YOLO11s · Modelo anterior</option>
           <option value="yolo11s_dataset15" selected>YOLO11s · Dataset 15</option>
           <option value="yolo11m_dataset15">YOLO11m · Dataset 15</option>
-        </select>
-      </div>
-      <div class="row-actions">
-        <button id="loadDefaultBtn" class="primary">Cargar modelo</button>
-        <label class="button">Cargar ONNX<input id="modelInput" type="file" accept=".onnx" hidden></label>
-        <label class="button">Metadatos JSON<input id="metadataInput" type="file" accept=".json" hidden></label>
-      </div>
-      <div class="grid metrics">
-        <div><span>Inferencia</span><b id="latency">—</b></div>
-        <div><span>Pipeline total</span><b id="pipelineLatency">—</b></div>
-        <div><span>Modelo activo</span><b id="activeModel">—</b></div>
-        <div><span>IA</span><b id="ips">0.0 IPS</b></div>
-        <div><span>Detecciones</span><b id="detectionCount">0</b></div>
-        <div><span>Entrada activa</span><b id="inputSize">—</b></div>
-        <div><span>Proveedor</span><b id="provider">—</b></div>
-        <div><span>Tracker</span><b id="trackerStatus">ACTIVO</b></div>
-      </div>
-    </section>
+        </select></div>
+        <div class="field"><label>Resolución IA</label><select id="resolutionSelect">
+          <option value="640">640 × 640 · Precisión</option><option value="512">512 × 512 · Equilibrado</option><option value="480" selected>480 × 480 · Rápido</option>
+        </select></div>
+        <div class="row-actions"><button id="loadDefaultBtn" class="primary">Cargar modelo</button><label class="button">ONNX<input id="modelInput" type="file" accept=".onnx" hidden></label><label class="button">Metadatos<input id="metadataInput" type="file" accept=".json" hidden></label></div>
+      </section>
 
-    <section class="card compliance-card">
-      <div class="section-title">
-        <h2>Detecciones y cumplimiento</h2>
-        <div id="globalCompliance" class="compliance neutral">SIN EVALUAR</div>
-      </div>
-      <div id="persons" class="persons"><p class="empty">No se han detectado personas.</p></div>
-    </section>
+      <section class="card">
+        <h3>5 · Ajustes de IA</h3>
+        <div class="configuration-grid">
+          <div class="field"><label>Confianza <output id="confOut">0.35</output></label><input id="confRange" type="range" min="0.10" max="0.90" step="0.05" value="0.35"></div>
+          <div class="field"><label>IoU NMS <output id="iouOut">0.45</output></label><input id="iouRange" type="range" min="0.10" max="0.90" step="0.05" value="0.45"></div>
+          <div class="field"><label>Rendimiento</label><select id="performanceMode"><option value="manual" selected>Manual / estable</option><option value="auto">Automático</option></select></div>
+          <div class="field"><label>Ritmo de IA</label><select id="frameSkip"><option value="0">Máxima velocidad</option><option value="200">5 IPS objetivo</option><option value="250">4 IPS objetivo</option><option value="333">3 IPS objetivo</option><option value="500">2 IPS objetivo</option><option value="700">Modo móvil compatible</option><option value="1200">Modo iPhone seguro</option></select></div>
+        </div>
+      </section>
 
-    <section class="card">
-      <h2>EPP obligatorios</h2>
-      <p class="hint">Solo los elementos seleccionados intervienen en la aprobación.</p>
-      <div id="requiredClasses" class="checks"></div>
-    </section>
+      <section class="card system-card">
+        <h3>6 · Rendimiento del dispositivo</h3>
+        <p id="deviceProfile" class="device-profile">Analizando dispositivo…</p>
+        <div class="metrics grid">
+          <div><span>FPS cámara</span><b id="diagFps">0 FPS</b></div>
+          <div><span>IPS IA</span><b id="diagIps">0 IPS</b></div>
+          <div><span>Inferencia</span><b id="diagLatency">—</b></div>
+          <div><span>Pipeline</span><b id="diagPipeline">—</b></div>
+          <div><span>Backend</span><b id="diagProvider">—</b></div>
+          <div><span>Modelo</span><b id="diagModel">Sin cargar</b></div>
+        </div>
+        <div class="legacy-metrics hidden">
+          <b id="latency">—</b><b id="pipelineLatency">—</b><b id="activeModel">—</b><b id="ips">0.0 IPS</b><b id="detectionCount">0</b><b id="inputSize">—</b><b id="provider">—</b><b id="trackerStatus">ACTIVO</b>
+        </div>
+      </section>
 
-    <section class="card">
-      <h2>Clases visibles</h2>
-      <div id="visibleClasses" class="checks compact"></div>
-    </section>
-  </aside>
+      <section class="card wide-card">
+        <div class="section-title"><h3>7 · Detecciones y cumplimiento</h3><div id="globalCompliance" class="compliance neutral">SIN EVALUAR</div></div>
+        <div id="persons" class="persons"><p class="empty">No se han detectado personas.</p></div>
+      </section>
+
+      <section class="card">
+        <h3>8 · Clases visibles</h3>
+        <div id="visibleClasses" class="checks compact"></div>
+      </section>
+
+      <section class="card wide-card report-card">
+        <div class="section-title"><h3>9 · Adquisición e informes</h3><span id="reportEventsBadge" class="badge pass">Registro · cada 5 s · 0</span></div>
+        <div class="report-fields">
+          <div class="field"><label>Tiempo entre tomas</label><select id="reportSampleInterval"><option value="1">1 s</option><option value="2">2 s</option><option value="5" selected>5 s</option><option value="10">10 s</option><option value="15">15 s</option><option value="30">30 s</option><option value="60">1 min</option><option value="120">2 min</option><option value="300">5 min</option></select></div>
+        </div>
+        <p class="hint report-live"><span id="sampleCountdownLabel">Próxima toma: al iniciar.</span> <span id="lastRecordLabel">Aún sin muestras.</span></p>
+        <div class="row-actions"><button id="downloadCsvBtn" class="primary">CSV</button><button id="downloadJsonBtn">JSON</button><button id="printReportBtn">PDF / Imprimir</button><button id="clearReportBtn">Limpiar</button></div>
+
+        <details class="iot-box"><summary>Evidencia fotográfica opcional</summary>
+          <div class="report-fields">
+            <div class="field"><label><input id="evidenceEnabled" type="checkbox"> Capturar cuando exista NO CUMPLE</label></div>
+            <div class="field"><label>Separación entre fotos</label><select id="evidenceCooldown"><option value="5">5 s</option><option value="15">15 s</option><option value="30" selected>30 s</option><option value="60">1 min</option><option value="120">2 min</option><option value="300">5 min</option></select></div>
+            <div class="field"><label>Calidad</label><select id="evidenceQuality"><option value="0.70">70 %</option><option value="0.82" selected>82 %</option><option value="0.92">92 %</option></select></div>
+            <div class="field"><label>Servidor de evidencias</label><input id="evidenceEndpoint" type="url" placeholder="https://servidor/api/evidence"></div>
+            <div class="field"><label>Token opcional</label><input id="evidenceApiKey" type="password" autocomplete="off"></div>
+          </div>
+          <div class="row-actions"><button id="captureEvidenceBtn">Capturar ahora</button><button id="downloadEvidenceBtn" disabled>Descargar última</button><span id="evidenceStatus" class="hint">Captura desactivada.</span></div>
+        </details>
+
+        <details class="iot-box"><summary>ThingSpeak</summary>
+          <div class="report-fields two"><div class="field"><label>Write API Key</label><input id="thingSpeakKey" type="password" autocomplete="off"></div><div class="field"><label>Intervalo</label><select id="thingSpeakInterval"><option value="0">Manual</option><option value="15">15 s</option><option value="30">30 s</option><option value="60">1 min</option><option value="120">2 min</option><option value="300">5 min</option></select></div></div>
+          <div class="row-actions"><button id="sendThingSpeakBtn">Enviar ahora</button><span id="iotStatus" class="hint">Sin envíos.</span></div>
+        </details>
+      </section>
+    </div>
+  </section>
 </main>
 
 <section id="printableReport" class="print-report" aria-hidden="true"></section>
-<script type="module" src="js/app.js?v=11"></script>
+<script type="module" src="js/app.js?v=12"></script>
 </body>
 </html>

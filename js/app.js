@@ -1,12 +1,19 @@
+await window.__ORT_READY__;
+
 const $ = id => document.getElementById(id);
 
 const DEVICE = {
   isIOS:
     /iPad|iPhone|iPod/.test(navigator.userAgent) ||
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1),
-  isMobile:
-    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+  isAndroid: /Android/i.test(navigator.userAgent),
+  isMobile: /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent),
+  memoryGB: Number(navigator.deviceMemory || 0),
+  cores: Number(navigator.hardwareConcurrency || 0)
 };
+
+DEVICE.lowMemory = DEVICE.isMobile && DEVICE.memoryGB > 0 && DEVICE.memoryGB <= 4;
+DEVICE.lowCpu = DEVICE.isMobile && DEVICE.cores > 0 && DEVICE.cores <= 4;
 
 function preferredExecutionProvider() {
   if (DEVICE.isIOS) return 'wasm';
@@ -14,8 +21,54 @@ function preferredExecutionProvider() {
   return 'wasm';
 }
 
+function devicePerformanceProfile() {
+  const provider = preferredExecutionProvider();
+
+  if (DEVICE.isIOS) {
+    return {
+      name: 'iPhone / iPad · modo seguro',
+      provider: 'wasm', modelKey: 'yolo11s_dataset15', inputSize: 480,
+      inferenceMs: 1200, cameraWidth: 640, cameraHeight: 480, cameraFps: 15,
+      allowHeavyModel: false
+    };
+  }
+
+  if (DEVICE.isAndroid) {
+    if (provider === 'webgpu' && !DEVICE.lowMemory && !DEVICE.lowCpu) {
+      return {
+        name: 'Android · WebGPU',
+        provider: 'webgpu', modelKey: 'yolo11s_dataset15', inputSize: 480,
+        inferenceMs: 200, cameraWidth: 960, cameraHeight: 540, cameraFps: 30,
+        allowHeavyModel: false
+      };
+    }
+    return {
+      name: 'Android · modo compatible',
+      provider: 'wasm', modelKey: 'yolo11s_dataset15', inputSize: 480,
+      inferenceMs: 700, cameraWidth: 640, cameraHeight: 480, cameraFps: 20,
+      allowHeavyModel: false
+    };
+  }
+
+  if (provider === 'webgpu') {
+    return {
+      name: 'Escritorio · WebGPU',
+      provider: 'webgpu', modelKey: 'yolo11s_dataset15', inputSize: 480,
+      inferenceMs: 0, cameraWidth: 1280, cameraHeight: 720, cameraFps: 30,
+      allowHeavyModel: true
+    };
+  }
+
+  return {
+    name: 'Escritorio · WASM',
+    provider: 'wasm', modelKey: 'yolo11s_dataset15', inputSize: 480,
+    inferenceMs: 400, cameraWidth: 640, cameraHeight: 480, cameraFps: 24,
+    allowHeavyModel: false
+  };
+}
+
 function recommendedInputSize() {
-  return 480;
+  return devicePerformanceProfile().inputSize;
 }
 const video = $('video');
 const canvas = $('canvas');
@@ -65,6 +118,14 @@ let lastEvidenceBlob = null;
 let lastEvidenceFileName = '';
 let evidenceBusy = false;
 const evidenceEvents = [];
+let availableCameras = [];
+let selectedCameraId = localStorage.getItem('eppSelectedCameraId') || '';
+let adminUnlocked = false;
+let adminIdleTimer = null;
+let deferredInstallPrompt = null;
+const ADMIN_IDLE_MS = 5 * 60 * 1000;
+const CONFIG_KEY = 'eppFactoryConfigV1';
+const ADMIN_KEY = 'eppAdminCredentialV1';
 let inferenceWorkspace = {
   size: 0,
   canvas: null,
@@ -221,9 +282,9 @@ async function fetchModelWithProgress(url, onProgress) {
 
   const total = Number(response.headers.get('content-length')) || 0;
 
-  // Algunos servidores/navegadores no exponen Content-Length o body streaming.
-  // En ese caso usamos arrayBuffer directamente.
-  if (!response.body || !total) {
+  // En iOS y equipos con poca memoria evitamos conservar chunks + copia final.
+  // arrayBuffer() mantiene un único bloque principal y reduce el pico de memoria.
+  if (DEVICE.isMobile || !response.body || !total) {
     const buffer = await response.arrayBuffer();
     onProgress?.(1, buffer.byteLength, buffer.byteLength);
     return new Uint8Array(buffer);
@@ -331,22 +392,30 @@ async function createSession(
       modelBytes,
       {
         executionProviders: [provider],
-        graphOptimizationLevel: 'all'
+        graphOptimizationLevel: DEVICE.isIOS ? 'basic' : 'all'
       }
     );
 
-    const zero = new Float32Array(3 * inputSize * inputSize);
-    const inputName = newSession.inputNames[0];
+    // Ya no necesitamos conservar los bytes descargados después de crear la sesión.
+    // Es especialmente importante en móviles para reducir el pico de memoria.
+    modelBytes = null;
+    await new Promise(resolve => setTimeout(resolve, 0));
 
-    setStatus(`Calentando ${modelDescription}...`);
+    if (!DEVICE.isIOS) {
+      const zero = new Float32Array(3 * inputSize * inputSize);
+      const inputName = newSession.inputNames[0];
 
-    await newSession.run({
-      [inputName]: new ort.Tensor(
-        'float32',
-        zero,
-        [1, 3, inputSize, inputSize]
-      )
-    });
+      setStatus(`Calentando ${modelDescription}...`);
+
+      const warmInput = new ort.Tensor(
+        'float32', zero, [1, 3, inputSize, inputSize]
+      );
+      const warmOutputs = await newSession.run({ [inputName]: warmInput });
+      for (const value of Object.values(warmOutputs)) {
+        try { value.dispose?.(); } catch (_) {}
+      }
+      try { warmInput.dispose?.(); } catch (_) {}
+    }
 
     session = newSession;
     newSession = null;
@@ -407,9 +476,12 @@ async function warmup() {
   const size = state.inputSize || metadata?.inputSize || 480;
   const zero = new Float32Array(3 * size * size);
   const inputName = session.inputNames[0];
-  await session.run({
-    [inputName]: new ort.Tensor('float32', zero, [1, 3, size, size])
-  });
+  const inputTensor = new ort.Tensor('float32', zero, [1, 3, size, size]);
+  const outputs = await session.run({ [inputName]: inputTensor });
+  for (const value of Object.values(outputs)) {
+    try { value.dispose?.(); } catch (_) {}
+  }
+  try { inputTensor.dispose?.(); } catch (_) {}
 }
 
 async function loadProfile(size, { fallback = false, reason = 'manual', modelKey = selectedModelKey() } = {}) {
@@ -459,6 +531,7 @@ function markInferenceComplete() {
   inferenceTimestamps = inferenceTimestamps.filter(t => now - t <= 1000);
   currentIps = inferenceTimestamps.length;
   $('ips').textContent = `${currentIps.toFixed(1)} IPS`;
+  updateSystemDiagnostics();
 }
 
 function recordLatencyForAutoTune(ms) {
@@ -555,34 +628,73 @@ function syncStageAspect() {
 
 async function startCamera() {
   stopSource(false);
-  stream = await navigator.mediaDevices.getUserMedia({
-      video: DEVICE.isIOS
-        ? {
-            facingMode: { ideal: 'environment' },
-            width: { ideal: 640, max: 640 },
-            height: { ideal: 480, max: 480 },
-            frameRate: { ideal: 20, max: 24 }
-          }
-        : {
-            facingMode: { ideal: 'environment' },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 30, max: 60 }
-          },
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error('Este navegador no permite acceder a la cámara.');
+  }
+
+  const profile = devicePerformanceProfile();
+  const cameraId = $('cameraSelect')?.value || selectedCameraId || '';
+  const videoConstraints = {
+    width: { ideal: profile.cameraWidth, max: profile.cameraWidth },
+    height: { ideal: profile.cameraHeight, max: profile.cameraHeight },
+    frameRate: { ideal: profile.cameraFps, max: profile.cameraFps }
+  };
+
+  if (cameraId) {
+    videoConstraints.deviceId = { exact: cameraId };
+  } else {
+    videoConstraints.facingMode = { ideal: 'environment' };
+  }
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: videoConstraints,
       audio: false
     });
+  } catch (error) {
+    // Si una cámara guardada dejó de existir, reintentamos con la cámara posterior.
+    if (cameraId && (error.name === 'OverconstrainedError' || error.name === 'NotFoundError')) {
+      selectedCameraId = '';
+      localStorage.removeItem('eppSelectedCameraId');
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: profile.cameraWidth, max: profile.cameraWidth },
+          height: { ideal: profile.cameraHeight, max: profile.cameraHeight },
+          frameRate: { ideal: profile.cameraFps, max: profile.cameraFps }
+        },
+        audio: false
+      });
+    } else {
+      throw error;
+    }
+  }
+
   video.srcObject = stream;
   video.playsInline = true;
   video.muted = true;
   video.src = '';
   video.controls = false;
   await video.play();
+
   sourceType = 'video';
   showVideoLayer();
   running = true;
   $('sourceLabel').textContent = 'Cámara';
   syncStageAspect();
+
+  await refreshCameras(false);
+  const activeTrack = stream.getVideoTracks()[0];
+  const settings = activeTrack?.getSettings?.() || {};
+  if (settings.deviceId) {
+    selectedCameraId = settings.deviceId;
+    localStorage.setItem('eppSelectedCameraId', selectedCameraId);
+    if ($('cameraSelect')) $('cameraSelect').value = selectedCameraId;
+  }
+
   startProcessingLoops();
+  updateSystemDiagnostics();
 }
 
 function openVideo(file) {
@@ -1141,8 +1253,10 @@ function drawDetectionBox(box, color, label, lineWidth = 3, alpha = 1) {
   ctx.globalAlpha = alpha;
   ctx.lineWidth = lineWidth;
   ctx.strokeStyle = color;
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 4;
+  if (!DEVICE.isMobile) {
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 4;
+  }
   ctx.strokeRect(x1, y1, width, height);
   ctx.shadowBlur = 0;
 
@@ -1197,6 +1311,7 @@ function renderCompliance(people) {
     container.innerHTML = '<p class="empty">No se han detectado personas.</p>';
     $('globalCompliance').textContent = 'SIN PERSONAS';
     $('globalCompliance').className = 'compliance neutral';
+    updateMonitorView([]);
     return;
   }
 
@@ -1238,8 +1353,327 @@ function renderCompliance(people) {
 
   $('globalCompliance').textContent = allComply ? 'CUMPLE' : 'NO CUMPLE';
   $('globalCompliance').className = `compliance ${allComply ? 'pass' : 'fail'}`;
+  updateMonitorView(people);
 }
 
+
+
+function base64FromBytes(bytes) {
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
+function bytesFromBase64(value) {
+  const binary = atob(value);
+  return Uint8Array.from(binary, c => c.charCodeAt(0));
+}
+
+async function derivePinHash(pin, salt) {
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveBits']
+  );
+  const bits = await crypto.subtle.deriveBits({
+    name: 'PBKDF2', salt, iterations: 120000, hash: 'SHA-256'
+  }, keyMaterial, 256);
+  return base64FromBytes(new Uint8Array(bits));
+}
+
+function hasAdminCredential() {
+  return Boolean(localStorage.getItem(ADMIN_KEY));
+}
+
+async function createAdminCredential(pin) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const hash = await derivePinHash(pin, salt);
+  localStorage.setItem(ADMIN_KEY, JSON.stringify({
+    salt: base64FromBytes(salt), hash, createdAt: new Date().toISOString()
+  }));
+}
+
+async function verifyAdminPin(pin) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(ADMIN_KEY) || 'null');
+    if (!saved?.salt || !saved?.hash) return false;
+    const hash = await derivePinHash(pin, bytesFromBase64(saved.salt));
+    return hash === saved.hash;
+  } catch (_) {
+    return false;
+  }
+}
+
+function resetAdminIdleTimer() {
+  clearTimeout(adminIdleTimer);
+  if (!adminUnlocked) return;
+  adminIdleTimer = setTimeout(() => {
+    lockAdmin();
+    setStatus('Administrador bloqueado automáticamente por inactividad.');
+  }, ADMIN_IDLE_MS);
+}
+
+function showAuthOverlay(mode = 'unlock') {
+  const overlay = $('authOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('hidden');
+  $('firstRunPanel')?.classList.toggle('hidden', mode !== 'create');
+  $('unlockPanel')?.classList.toggle('hidden', mode !== 'unlock');
+  setTimeout(() => {
+    (mode === 'create' ? $('setupPin') : $('unlockPin'))?.focus();
+  }, 50);
+}
+
+function hideAuthOverlay() {
+  $('authOverlay')?.classList.add('hidden');
+  if ($('setupPin')) $('setupPin').value = '';
+  if ($('setupPinConfirm')) $('setupPinConfirm').value = '';
+  if ($('unlockPin')) $('unlockPin').value = '';
+  if ($('authError')) $('authError').textContent = '';
+}
+
+function setAppMode(mode) {
+  const admin = mode === 'admin';
+  document.body.classList.toggle('admin-mode', admin);
+  document.body.classList.toggle('monitor-mode', !admin);
+  $('adminView')?.classList.toggle('hidden', !admin);
+  $('monitorView')?.classList.toggle('hidden', admin);
+  $('adminLiveControls')?.classList.toggle('hidden', !admin);
+  $('monitorLiveControls')?.classList.toggle('hidden', admin);
+
+  if (admin) {
+    adminUnlocked = true;
+    resetAdminIdleTimer();
+    updateSystemDiagnostics();
+  } else {
+    adminUnlocked = false;
+    clearTimeout(adminIdleTimer);
+  }
+}
+
+function lockAdmin() {
+  saveFactoryConfig();
+  adminUnlocked = false;
+  setAppMode('monitor');
+}
+
+function factoryConfigFromUi() {
+  return {
+    version: 1,
+    company: $('reportProject')?.value.trim() || '',
+    area: $('reportArea')?.value.trim() || '',
+    owner: $('reportOwner')?.value.trim() || '',
+    cameraId: $('cameraSelect')?.value || selectedCameraId || '',
+    required: [...state.required],
+    visible: [...state.visible],
+    confidence: state.confidence,
+    iou: state.iou,
+    modelKey: selectedModelKey(),
+    inputSize: Number($('resolutionSelect')?.value || state.inputSize || 480),
+    performanceMode: $('performanceMode')?.value || state.performanceMode,
+    inferenceMinIntervalMs: Number($('frameSkip')?.value || state.inferenceMinIntervalMs || 0),
+    reportSampleIntervalSec: Number($('reportSampleInterval')?.value || 5),
+    evidenceEnabled: Boolean($('evidenceEnabled')?.checked),
+    evidenceCooldownSec: Number($('evidenceCooldown')?.value || 30),
+    evidenceQuality: Number($('evidenceQuality')?.value || 0.82),
+    evidenceEndpoint: $('evidenceEndpoint')?.value.trim() || '',
+    thingSpeakInterval: Number($('thingSpeakInterval')?.value || 0),
+    configuredAt: new Date().toISOString()
+  };
+}
+
+function saveFactoryConfig() {
+  try {
+    const config = factoryConfigFromUi();
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+    selectedCameraId = config.cameraId || '';
+    if (selectedCameraId) localStorage.setItem('eppSelectedCameraId', selectedCameraId);
+    $('configState') && ($('configState').textContent = 'Configuración guardada');
+    updateMonitorIdentity();
+    return config;
+  } catch (error) {
+    console.warn('No se pudo guardar configuración:', error);
+    return null;
+  }
+}
+
+function loadFactoryConfig() {
+  try {
+    const config = JSON.parse(localStorage.getItem(CONFIG_KEY) || 'null');
+    if (!config) return null;
+
+    if ($('reportProject')) $('reportProject').value = config.company || '';
+    if ($('reportArea')) $('reportArea').value = config.area || '';
+    if ($('reportOwner')) $('reportOwner').value = config.owner || '';
+    selectedCameraId = config.cameraId || selectedCameraId;
+
+    if (Array.isArray(config.required)) state.required = new Set(config.required);
+    if (Array.isArray(config.visible)) state.visible = new Set(config.visible);
+    if (metadata) renderClassChecks();
+
+    if (Number.isFinite(config.confidence)) {
+      state.confidence = config.confidence;
+      if ($('confRange')) $('confRange').value = String(config.confidence);
+      if ($('confOut')) $('confOut').value = Number(config.confidence).toFixed(2);
+    }
+    if (Number.isFinite(config.iou)) {
+      state.iou = config.iou;
+      if ($('iouRange')) $('iouRange').value = String(config.iou);
+      if ($('iouOut')) $('iouOut').value = Number(config.iou).toFixed(2);
+    }
+
+    if (config.modelKey && MODEL_CATALOG[config.modelKey]) {
+      currentModelKey = config.modelKey;
+      if ($('modelSelect')) $('modelSelect').value = config.modelKey;
+    }
+    if ([480, 512, 640].includes(Number(config.inputSize))) {
+      state.inputSize = Number(config.inputSize);
+      if ($('resolutionSelect')) $('resolutionSelect').value = String(config.inputSize);
+    }
+
+    state.performanceMode = config.performanceMode || state.performanceMode;
+    if ($('performanceMode')) $('performanceMode').value = state.performanceMode;
+
+    if (Number.isFinite(config.inferenceMinIntervalMs)) {
+      state.inferenceMinIntervalMs = config.inferenceMinIntervalMs;
+      if ($('frameSkip')) $('frameSkip').value = String(config.inferenceMinIntervalMs);
+    }
+
+    if (Number.isFinite(config.reportSampleIntervalSec)) {
+      state.reportSampleIntervalMs = Math.max(1, config.reportSampleIntervalSec) * 1000;
+      if ($('reportSampleInterval')) $('reportSampleInterval').value = String(config.reportSampleIntervalSec);
+    }
+
+    state.evidenceEnabled = Boolean(config.evidenceEnabled);
+    if ($('evidenceEnabled')) $('evidenceEnabled').checked = state.evidenceEnabled;
+    if (config.evidenceCooldownSec && $('evidenceCooldown')) $('evidenceCooldown').value = String(config.evidenceCooldownSec);
+    if (config.evidenceQuality && $('evidenceQuality')) $('evidenceQuality').value = String(config.evidenceQuality);
+    if ($('evidenceEndpoint')) $('evidenceEndpoint').value = config.evidenceEndpoint || '';
+    if ($('thingSpeakInterval')) $('thingSpeakInterval').value = String(config.thingSpeakInterval || 0);
+
+    $('configState') && ($('configState').textContent = 'Configuración instalada en este dispositivo');
+    updateMonitorIdentity();
+    return config;
+  } catch (error) {
+    console.warn('Configuración local inválida:', error);
+    return null;
+  }
+}
+
+function updateMonitorIdentity() {
+  if ($('monitorCompany')) $('monitorCompany').textContent = $('reportProject')?.value.trim() || 'Sistema de seguridad EPP';
+  if ($('monitorArea')) $('monitorArea').textContent = $('reportArea')?.value.trim() || 'Área sin configurar';
+}
+
+function updateMonitorView(people) {
+  const status = $('monitorCompliance');
+  const detail = $('monitorDetail');
+  const chips = $('monitorRequired');
+  if (!status || !detail || !chips || !metadata) return;
+
+  chips.innerHTML = [...state.required].map(classId => {
+    const everyoneHas = people.length > 0 && people.every(p => p.epp.has(classId));
+    return `<span class="monitor-chip ${everyoneHas ? 'ok' : 'missing'}">${metadata.classes[classId]} ${everyoneHas ? '✓' : '—'}</span>`;
+  }).join('');
+
+  if (!people.length) {
+    status.textContent = 'EN ESPERA';
+    status.className = 'monitor-compliance neutral';
+    detail.textContent = 'Ubíquese dentro del área de detección.';
+    return;
+  }
+
+  const nonCompliant = people.filter(p => !p.ok);
+  if (!nonCompliant.length) {
+    status.textContent = '✓ CUMPLE';
+    status.className = 'monitor-compliance pass';
+    detail.textContent = `${people.length} persona${people.length === 1 ? '' : 's'} · EPP completo`;
+    return;
+  }
+
+  const missing = [...new Set(nonCompliant.flatMap(p => p.missing.map(id => metadata.classes[id])))];
+  status.textContent = '⚠ NO CUMPLE';
+  status.className = 'monitor-compliance fail';
+  detail.textContent = `Falta: ${missing.join(', ') || 'EPP requerido'}`;
+}
+
+async function refreshCameras(requestPermission = false) {
+  if (!navigator.mediaDevices?.enumerateDevices) return [];
+
+  if (requestPermission && !stream) {
+    try {
+      const temp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      temp.getTracks().forEach(track => track.stop());
+    } catch (error) {
+      setStatus(`No se pudo obtener permiso de cámara: ${error.message}`);
+    }
+  }
+
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  availableCameras = devices.filter(device => device.kind === 'videoinput');
+  const select = $('cameraSelect');
+  if (select) {
+    const current = selectedCameraId || select.value;
+    select.innerHTML = '';
+    availableCameras.forEach((camera, index) => {
+      const option = document.createElement('option');
+      option.value = camera.deviceId;
+      option.textContent = camera.label || `Cámara ${index + 1}`;
+      select.appendChild(option);
+    });
+    if (current && availableCameras.some(c => c.deviceId === current)) {
+      select.value = current;
+    } else if (availableCameras.length) {
+      const back = availableCameras.find(c => /back|rear|environment|trasera/i.test(c.label));
+      select.value = back?.deviceId || availableCameras[0].deviceId;
+    }
+    selectedCameraId = select.value || '';
+  }
+  if ($('cameraCount')) $('cameraCount').textContent = `${availableCameras.length} cámara${availableCameras.length === 1 ? '' : 's'}`;
+  return availableCameras;
+}
+
+async function switchToNextCamera() {
+  await refreshCameras(true);
+  if (availableCameras.length < 2) {
+    setStatus('Solo se detectó una cámara disponible.');
+    return;
+  }
+  const currentIndex = Math.max(0, availableCameras.findIndex(c => c.deviceId === selectedCameraId));
+  const next = availableCameras[(currentIndex + 1) % availableCameras.length];
+  selectedCameraId = next.deviceId;
+  localStorage.setItem('eppSelectedCameraId', selectedCameraId);
+  if ($('cameraSelect')) $('cameraSelect').value = selectedCameraId;
+  if (running && sourceType === 'video') await startCamera();
+  setStatus(`Cámara activa: ${next.label || 'Cámara seleccionada'}.`);
+}
+
+function updateSystemDiagnostics() {
+  const profile = devicePerformanceProfile();
+  const parts = [
+    profile.name,
+    `Backend ${profile.provider.toUpperCase()}`,
+    DEVICE.cores ? `${DEVICE.cores} hilos lógicos` : 'CPU no reportada',
+    DEVICE.memoryGB ? `~${DEVICE.memoryGB} GB RAM reportada` : 'RAM no reportada'
+  ];
+  if ($('deviceProfile')) $('deviceProfile').textContent = parts.join(' · ');
+  if ($('diagFps')) $('diagFps').textContent = `${currentFps.toFixed(1)} FPS`;
+  if ($('diagIps')) $('diagIps').textContent = `${currentIps.toFixed(1)} IPS`;
+  if ($('diagLatency')) $('diagLatency').textContent = lastLatencyMs ? `${lastLatencyMs.toFixed(1)} ms` : '—';
+  if ($('diagPipeline')) $('diagPipeline').textContent = lastPipelineMs ? `${lastPipelineMs.toFixed(1)} ms` : '—';
+  if ($('diagProvider')) $('diagProvider').textContent = $('provider')?.textContent || profile.provider.toUpperCase();
+  if ($('diagModel')) $('diagModel').textContent = session ? `${modelLabel(currentModelKey)} · ${state.inputSize}×${state.inputSize}` : 'Sin cargar';
+}
+
+async function startInstalledMonitoring() {
+  saveFactoryConfig();
+  setAppMode('monitor');
+  try {
+    if (!session) await loadDefault();
+    await startCamera();
+    setStatus('Monitoreo activo.');
+  } catch (error) {
+    setStatus(`No se pudo iniciar el monitoreo: ${error.message}`);
+  }
+}
 
 function safeFilePart(value) {
   return String(value || '')
@@ -1964,6 +2398,88 @@ function configureThingSpeakTimer() {
   if (seconds > 0) iotTimer = setInterval(sendThingSpeak, seconds * 1000);
 }
 
+
+$('adminAccessBtn').onclick = () => {
+  if (!hasAdminCredential()) showAuthOverlay('create');
+  else showAuthOverlay('unlock');
+};
+
+$('cancelUnlockBtn').onclick = hideAuthOverlay;
+
+$('createAdminBtn').onclick = async () => {
+  const pin = $('setupPin').value.trim();
+  const confirm = $('setupPinConfirm').value.trim();
+  if (!/^\d{4,8}$/.test(pin)) {
+    $('authError').textContent = 'Use un PIN numérico de 4 a 8 dígitos.';
+    return;
+  }
+  if (pin !== confirm) {
+    $('authError').textContent = 'Los PIN no coinciden.';
+    return;
+  }
+  await createAdminCredential(pin);
+  hideAuthOverlay();
+  setAppMode('admin');
+  setStatus('Administrador creado. Configure la estación y guarde los cambios.');
+};
+
+$('unlockAdminBtn').onclick = async () => {
+  const ok = await verifyAdminPin($('unlockPin').value.trim());
+  if (!ok) {
+    $('authError').textContent = 'PIN incorrecto.';
+    return;
+  }
+  hideAuthOverlay();
+  setAppMode('admin');
+  setStatus('Modo administrador desbloqueado.');
+};
+
+$('lockAdminBtn').onclick = lockAdmin;
+$('saveConfigBtn').onclick = () => {
+  saveFactoryConfig();
+  setStatus('Configuración guardada en este dispositivo.');
+};
+$('startInstalledBtn').onclick = startInstalledMonitoring;
+$('monitorStartBtn').onclick = startInstalledMonitoring;
+$('monitorStopBtn').onclick = () => stopSource(false);
+$('switchCameraBtn').onclick = () => switchToNextCamera().catch(error => setStatus(error.message));
+$('refreshCamerasBtn').onclick = () => refreshCameras(true).catch(error => setStatus(error.message));
+$('testCameraBtn').onclick = () => startCamera().catch(error => setStatus(error.message));
+$('cameraSelect').onchange = event => {
+  selectedCameraId = event.target.value;
+  localStorage.setItem('eppSelectedCameraId', selectedCameraId);
+  saveFactoryConfig();
+};
+
+['click','keydown','pointerdown','touchstart'].forEach(name => {
+  document.addEventListener(name, () => {
+    if (adminUnlocked) resetAdminIdleTimer();
+  }, { passive: true });
+});
+
+navigator.mediaDevices?.addEventListener?.('devicechange', () => {
+  refreshCameras(false).catch(console.warn);
+});
+
+window.addEventListener('beforeinstallprompt', event => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+  $('installAppBtn')?.classList.remove('hidden');
+});
+
+$('installAppBtn').onclick = async () => {
+  if (deferredInstallPrompt) {
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice.catch(() => null);
+    deferredInstallPrompt = null;
+    $('installAppBtn').classList.add('hidden');
+  } else {
+    setStatus(DEVICE.isIOS
+      ? 'En iPhone: Compartir → Agregar a pantalla de inicio.'
+      : 'Use la opción Instalar aplicación del menú del navegador.');
+  }
+};
+
 $('loadDefaultBtn').onclick = () => loadDefault().catch(error => {
   setStatus(`No se pudo cargar el modelo predeterminado: ${error.message}`);
 });
@@ -2203,56 +2719,40 @@ configureThingSpeakTimer();
 
 
 function applyDeviceProfile() {
-  const provider = preferredExecutionProvider();
+  const profile = devicePerformanceProfile();
 
-  state.inputSize = recommendedInputSize();
+  // Solo imponemos límites conservadores en móviles. En escritorio se conserva
+  // la configuración guardada por el administrador.
+  if (DEVICE.isMobile) {
+    state.inputSize = profile.inputSize;
+    state.performanceMode = 'manual';
+    state.inferenceMinIntervalMs = Math.max(state.inferenceMinIntervalMs, profile.inferenceMs);
 
-  // iOS: limitar el ritmo de inferencia para evitar reinicios por memoria.
-  if (DEVICE.isIOS) {
-    state.inferenceMinIntervalMs = 700;
-  }
+    if ($('resolutionSelect')) $('resolutionSelect').value = String(profile.inputSize);
+    if ($('performanceMode')) $('performanceMode').value = 'manual';
+    if ($('frameSkip')) {
+      const values = [...$('frameSkip').options].map(o => Number(o.value));
+      const closest = values.reduce((a, b) => Math.abs(b - profile.inferenceMs) < Math.abs(a - profile.inferenceMs) ? b : a, values[0]);
+      $('frameSkip').value = String(closest);
+      state.inferenceMinIntervalMs = closest;
+    }
 
-  if ($('resolutionSelect')) {
-    $('resolutionSelect').value = '480';
-  }
+    for (const option of $('modelSelect')?.options || []) {
+      if (option.value === 'yolo11m_dataset15') option.disabled = true;
+    }
 
-  if (DEVICE.isIOS) {
-    state.evidenceEnabled = false;
-    if ($('evidenceEnabled')) $('evidenceEnabled').checked = false;
-  }
-
-  if (DEVICE.isIOS && $('modelSelect')) {
-    $('modelSelect').value = 'yolo11s_dataset15';
-    currentModelKey = 'yolo11s_dataset15';
-
-    for (const option of $('modelSelect').options) {
-      if (option.value === 'yolo11m_dataset15') {
-        option.disabled = true;
-        if (!option.textContent.includes('iPhone')) {
-          option.textContent += ' · no disponible en iPhone';
-        }
-      }
+    if (DEVICE.isIOS) {
+      state.evidenceEnabled = false;
+      if ($('evidenceEnabled')) $('evidenceEnabled').checked = false;
     }
   }
 
-  if ($('provider')) {
-    $('provider').textContent = provider.toUpperCase();
-  }
-
+  if ($('provider')) $('provider').textContent = profile.provider.toUpperCase();
   if ($('engineBadge')) {
-    $('engineBadge').textContent = DEVICE.isIOS
-      ? 'Motor: WASM · iPhone/iPad'
-      : `Motor: ${provider.toUpperCase()}`;
+    $('engineBadge').textContent = `Motor: ${profile.provider.toUpperCase()} · ${DEVICE.isIOS ? 'iOS' : DEVICE.isAndroid ? 'Android' : 'PC'}`;
   }
 
-  console.log(
-    'Perfil:',
-    DEVICE.isIOS ? 'iOS' : (DEVICE.isMobile ? 'Móvil' : 'Escritorio'),
-    'Proveedor:',
-    provider,
-    'Entrada:',
-    state.inputSize
-  );
+  updateSystemDiagnostics();
 }
 
 restoreReportSession();
@@ -2260,9 +2760,25 @@ applyDeviceProfile();
 updateAcquisitionClock();
 updateRoiUi();
 
-loadMetadata().catch(error => setStatus(error.message));
+loadMetadata()
+  .then(() => {
+    loadFactoryConfig();
+    applyDeviceProfile();
+    updateMonitorIdentity();
+    updateMonitorView([]);
+    refreshCameras(false).catch(console.warn);
+
+    if (!hasAdminCredential()) {
+      setAppMode('monitor');
+      showAuthOverlay('create');
+    } else {
+      setAppMode('monitor');
+    }
+  })
+  .catch(error => setStatus(error.message));
 
 window.addEventListener('beforeunload', () => {
+  saveFactoryConfig();
   if (session && typeof session.release === 'function') {
     try {
       session.release();

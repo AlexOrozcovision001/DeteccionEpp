@@ -1,0 +1,9 @@
+{
+  "name": "EPP Guard - Monitoreo Inteligente",
+  "short_name": "EPP Guard",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#050b14",
+  "theme_color": "#07111f",
+  "description": "Monitoreo local de uso de equipos de protección personal mediante visión artificial."
+}
