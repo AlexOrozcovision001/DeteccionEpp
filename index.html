@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>EPP Guard · Monitoreo inteligente</title>
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="css/styles.css?v=12">
+  <link rel="stylesheet" href="css/styles.css?v=13">
   <script>
     window.__EPP_BOOT__ = (() => {
       const ua = navigator.userAgent;
@@ -163,26 +163,86 @@
       </section>
 
       <section class="card">
-        <h3>5 · Ajustes de IA</h3>
+        <h3>5 · Ajustes de IA y estabilidad</h3>
         <div class="configuration-grid">
           <div class="field"><label>Confianza <output id="confOut">0.35</output></label><input id="confRange" type="range" min="0.10" max="0.90" step="0.05" value="0.35"></div>
           <div class="field"><label>IoU NMS <output id="iouOut">0.45</output></label><input id="iouRange" type="range" min="0.10" max="0.90" step="0.05" value="0.45"></div>
           <div class="field"><label>Rendimiento</label><select id="performanceMode"><option value="manual" selected>Manual / estable</option><option value="auto">Automático</option></select></div>
-          <div class="field"><label>Ritmo de IA</label><select id="frameSkip"><option value="0">Máxima velocidad</option><option value="200">5 IPS objetivo</option><option value="250">4 IPS objetivo</option><option value="333">3 IPS objetivo</option><option value="500">2 IPS objetivo</option><option value="700">Modo móvil compatible</option><option value="1200">Modo iPhone seguro</option></select></div>
+          <div class="field"><label>Ritmo de IA</label><select id="frameSkip"><option value="0">Máxima velocidad</option><option value="200">5 IPS objetivo</option><option value="250">4 IPS objetivo</option><option value="333">3 IPS objetivo</option><option value="500">2 IPS objetivo</option><option value="700">Modo móvil compatible</option><option value="1500">Modo iPhone seguro</option></select></div>
         </div>
+        <div class="temporal-settings">
+          <div class="field"><label>Recuperación de Persona ID</label><div class="input-suffix"><input id="personRecoverySec" type="number" min="3" max="30" step="1" value="10"><span>s</span></div></div>
+          <div class="field"><label>Confirmación de EPP</label><div class="input-suffix"><input id="eppConfirmSec" type="number" min="0.5" max="10" step="0.5" value="2"><span>s</span></div></div>
+          <div class="field"><label>Persistencia EPP verificado</label><div class="input-suffix"><input id="eppLatchSec" type="number" min="3" max="30" step="1" value="10"><span>s</span></div></div>
+          <div class="field"><label>Confirmación de ausencia</label><div class="input-suffix"><input id="eppAbsenceSec" type="number" min="1" max="15" step="0.5" value="5"><span>s</span></div></div>
+        </div>
+        <p class="hint">Un EPP debe confirmarse antes de enclavarse. Las pérdidas breves no cambian inmediatamente el estado; si la persona sigue visible y el EPP permanece ausente, se desenclava después del tiempo configurado.</p>
       </section>
 
-      <section class="card system-card">
-        <h3>6 · Rendimiento del dispositivo</h3>
-        <p id="deviceProfile" class="device-profile">Analizando dispositivo…</p>
-        <div class="metrics grid">
-          <div><span>FPS cámara</span><b id="diagFps">0 FPS</b></div>
-          <div><span>IPS IA</span><b id="diagIps">0 IPS</b></div>
-          <div><span>Inferencia</span><b id="diagLatency">—</b></div>
-          <div><span>Pipeline</span><b id="diagPipeline">—</b></div>
-          <div><span>Backend</span><b id="diagProvider">—</b></div>
-          <div><span>Modelo</span><b id="diagModel">Sin cargar</b></div>
+      <section class="card system-card wide-card">
+        <div class="section-title">
+          <h3>6 · Rendimiento del dispositivo</h3>
+          <span id="benchmarkStatus" class="badge neutral">Benchmark inactivo</span>
         </div>
+        <p id="deviceProfile" class="device-profile">Analizando dispositivo…</p>
+
+        <div class="diagnostic-group">
+          <h4>Dispositivo y recursos</h4>
+          <div class="metrics diagnostic-grid">
+            <div><span>Sistema / navegador</span><b id="diagPlatform">—</b></div>
+            <div><span>CPU lógica</span><b id="diagCpu">—</b></div>
+            <div><span>RAM aproximada</span><b id="diagRam">—</b></div>
+            <div><span>Memoria JS</span><b id="diagJsMemory">No disponible</b></div>
+            <div><span>Almacenamiento del sitio</span><b id="diagStorage">—</b></div>
+            <div><span>Pantalla / DPR</span><b id="diagScreen">—</b></div>
+            <div><span>Batería</span><b id="diagBattery">No disponible</b></div>
+            <div><span>Consumo estimado</span><b id="diagEnergyRate">No disponible</b></div>
+          </div>
+        </div>
+
+        <div class="diagnostic-group">
+          <h4>IA, cámara y estabilidad</h4>
+          <div class="metrics diagnostic-grid">
+            <div><span>FPS actual</span><b id="diagFps">0 FPS</b></div>
+            <div><span>FPS promedio / mínimo</span><b id="diagFpsStats">—</b></div>
+            <div><span>IPS actual</span><b id="diagIps">0 IPS</b></div>
+            <div><span>IPS promedio</span><b id="diagIpsAvg">—</b></div>
+            <div><span>Inferencia actual</span><b id="diagLatency">—</b></div>
+            <div><span>Latencia promedio</span><b id="diagLatencyAvg">—</b></div>
+            <div><span>P50 / P95 / P99</span><b id="diagLatencyPercentiles">—</b></div>
+            <div><span>Pipeline</span><b id="diagPipeline">—</b></div>
+            <div><span>Pre / postproceso</span><b id="diagPrePost">—</b></div>
+            <div><span>Ocupación pipeline IA</span><b id="diagAiLoad">—</b></div>
+            <div><span>Backend</span><b id="diagProvider">—</b></div>
+            <div><span>Modelo</span><b id="diagModel">Sin cargar</b></div>
+            <div><span>Cámara activa</span><b id="diagCamera">—</b></div>
+            <div><span>Carga del modelo</span><b id="diagModelLoad">—</b></div>
+            <div><span>Long Tasks</span><b id="diagLongTasks">No disponible</b></div>
+            <div><span>Errores de inferencia</span><b id="diagErrors">0</b></div>
+            <div><span>Tiempo activo</span><b id="diagUptime">00:00:00</b></div>
+          </div>
+        </div>
+
+        <div class="benchmark-box">
+          <div>
+            <b>Prueba comparativa fija</b>
+            <p class="hint">Durante la prueba se bloquean modelo, resolución y modo automático para comparar dispositivos con la misma configuración.</p>
+          </div>
+          <div class="benchmark-controls">
+            <select id="benchmarkDuration">
+              <option value="60">1 minuto</option>
+              <option value="300">5 minutos</option>
+              <option value="600" selected>10 minutos</option>
+              <option value="1800">30 minutos</option>
+              <option value="3600">60 minutos</option>
+            </select>
+            <button id="startBenchmarkBtn" class="primary">Iniciar benchmark</button>
+            <button id="stopBenchmarkBtn" disabled>Detener</button>
+            <button id="downloadBenchmarkCsvBtn" disabled>CSV rendimiento</button>
+            <button id="downloadBenchmarkJsonBtn" disabled>JSON rendimiento</button>
+          </div>
+        </div>
+
         <div class="legacy-metrics hidden">
           <b id="latency">—</b><b id="pipelineLatency">—</b><b id="activeModel">—</b><b id="ips">0.0 IPS</b><b id="detectionCount">0</b><b id="inputSize">—</b><b id="provider">—</b><b id="trackerStatus">ACTIVO</b>
         </div>
@@ -227,6 +287,6 @@
 </main>
 
 <section id="printableReport" class="print-report" aria-hidden="true"></section>
-<script type="module" src="js/app.js?v=12"></script>
+<script type="module" src="js/app.js?v=13"></script>
 </body>
 </html>

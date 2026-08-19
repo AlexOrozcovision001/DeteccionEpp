@@ -28,7 +28,7 @@ function devicePerformanceProfile() {
     return {
       name: 'iPhone / iPad · modo seguro',
       provider: 'wasm', modelKey: 'yolo11s_dataset15', inputSize: 480,
-      inferenceMs: 1200, cameraWidth: 640, cameraHeight: 480, cameraFps: 15,
+      inferenceMs: 1500, cameraWidth: 640, cameraHeight: 480, cameraFps: 12,
       allowHeavyModel: false
     };
   }
@@ -89,6 +89,11 @@ let frameNo = 0;
 let lastFpsAt = performance.now();
 let fpsFrames = 0;
 let currentFps = 0;
+let currentCameraFps = 0;
+let cameraFrameCounter = 0;
+let cameraFpsLastAt = performance.now();
+let cameraFpsMeterToken = 0;
+let lastRenderAt = 0;
 let lastLatencyMs = 0;
 let imageBitmap = null;
 let sourceType = 'none';
@@ -118,6 +123,48 @@ let lastEvidenceBlob = null;
 let lastEvidenceFileName = '';
 let evidenceBusy = false;
 const evidenceEvents = [];
+
+const PERF_HISTORY_LIMIT = DEVICE.isMobile ? 300 : 900;
+const performanceDiagnostics = {
+  appStartedAt: performance.now(),
+  fps: [],
+  ips: [],
+  latency: [],
+  pipeline: [],
+  preprocess: [],
+  postprocess: [],
+  inferenceErrors: 0,
+  longTasks: 0,
+  longTaskTotalMs: 0,
+  longTaskMaxMs: 0,
+  longTaskSupported: false,
+  cameraSettings: {},
+  storage: { usage: null, quota: null },
+  lastStorageCheckAt: 0,
+  battery: null,
+  batteryStartLevel: null,
+  batteryStartAt: null,
+  modelLoad: { downloadMs: 0, initMs: 0, warmupMs: 0, totalMs: 0 },
+  lastUiUpdateAt: 0
+};
+
+const benchmarkState = {
+  active: false,
+  startedAt: 0,
+  durationMs: 0,
+  testId: '',
+  samples: [],
+  timer: null,
+  previousPerformanceMode: 'manual',
+  batteryStartLevel: null,
+  batteryEndLevel: null,
+  startedWallTime: null,
+  completedAt: 0,
+  completedWallTime: null
+};
+
+let lastPreprocessMs = 0;
+let lastPostprocessMs = 0;
 let availableCameras = [];
 let selectedCameraId = localStorage.getItem('eppSelectedCameraId') || '';
 let adminUnlocked = false;
@@ -126,6 +173,7 @@ let deferredInstallPrompt = null;
 const ADMIN_IDLE_MS = 5 * 60 * 1000;
 const CONFIG_KEY = 'eppFactoryConfigV1';
 const ADMIN_KEY = 'eppAdminCredentialV1';
+const BENCHMARK_RECOVERY_KEY = 'eppBenchmarkRecoveryV1';
 let inferenceWorkspace = {
   size: 0,
   canvas: null,
@@ -191,8 +239,12 @@ const state = {
   visible: new Set(),
   personPersistence: 30,
   eppPersistence: 20,
-  personHoldMs: 3200,
-  eppHoldMs: 1800,
+  personHoldMs: 10000,
+  eppHoldMs: 2200,
+  eppConfirmMs: 2000,
+  eppLatchHoldMs: 10000,
+  eppAbsenceConfirmMs: 5000,
+  eppMinConfirmHits: 3,
   smoothingPerson: 0.34,
   smoothingEpp: 0.30,
   roi: null, // normalizado: {x1,y1,x2,y2}
@@ -224,6 +276,521 @@ const colors = [
 ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@dev/dist/';
 ort.env.wasm.numThreads = 1;
 ort.env.wasm.proxy = false;
+
+
+function pushPerfSample(list, value) {
+  if (!Number.isFinite(value)) return;
+  list.push(Number(value));
+  if (list.length > PERF_HISTORY_LIMIT) list.splice(0, list.length - PERF_HISTORY_LIMIT);
+}
+
+function average(values) {
+  return values?.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+function percentile(values, q) {
+  if (!values?.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1));
+  return sorted[index];
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return 'No disponible';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = Math.max(0, bytes);
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value >= 100 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
+}
+
+function formatDuration(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = String(Math.floor(total / 3600)).padStart(2, '0');
+  const m = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
+  const s = String(total % 60).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
+
+function platformDescription() {
+  const ua = navigator.userAgent;
+  let os = 'Desconocido';
+
+  if (DEVICE.isIOS) {
+    const match = ua.match(/OS (\d+[_\d]*)/);
+    os = `iOS${match ? ' ' + match[1].replaceAll('_', '.') : ''}`;
+  } else if (DEVICE.isAndroid) {
+    const match = ua.match(/Android\s([\d.]+)/);
+    os = `Android${match ? ' ' + match[1] : ''}`;
+  } else if (/Windows NT/i.test(ua)) os = 'Windows';
+  else if (/Mac OS X/i.test(ua)) os = 'macOS';
+  else if (/Linux/i.test(ua)) os = 'Linux';
+
+  let browser = 'Navegador';
+  let version = '';
+  const candidates = [
+    ['Edge iOS', /EdgiOS\/([\d.]+)/],
+    ['Chrome iOS', /CriOS\/([\d.]+)/],
+    ['Firefox iOS', /FxiOS\/([\d.]+)/],
+    ['Edge', /Edg\/([\d.]+)/],
+    ['Chrome', /Chrome\/([\d.]+)/],
+    ['Firefox', /Firefox\/([\d.]+)/],
+    ['Safari', /Version\/([\d.]+).*Safari/]
+  ];
+
+  for (const [name, regex] of candidates) {
+    const match = ua.match(regex);
+    if (match) {
+      browser = name;
+      version = match[1];
+      break;
+    }
+  }
+
+  return `${os} · ${browser}${version ? ' ' + version.split('.').slice(0, 2).join('.') : ''}`;
+}
+
+async function initBatteryDiagnostics() {
+  if (performanceDiagnostics.battery || typeof navigator.getBattery !== 'function') return;
+  try {
+    const battery = await navigator.getBattery();
+    performanceDiagnostics.battery = battery;
+    performanceDiagnostics.batteryStartLevel = Number(battery.level);
+    performanceDiagnostics.batteryStartAt = performance.now();
+
+    const refresh = () => updateSystemDiagnostics(true);
+    battery.addEventListener?.('levelchange', refresh);
+    battery.addEventListener?.('chargingchange', refresh);
+  } catch (_) {}
+}
+
+function batteryDrainRatePerHour() {
+  const battery = performanceDiagnostics.battery;
+  if (!battery || battery.charging || !Number.isFinite(performanceDiagnostics.batteryStartLevel)) return null;
+
+  const elapsedHours = (performance.now() - performanceDiagnostics.batteryStartAt) / 3600000;
+  if (elapsedHours < 1 / 120) return null;
+
+  const drain = performanceDiagnostics.batteryStartLevel - battery.level;
+  if (drain < 0) return 0;
+  return (drain * 100) / elapsedHours;
+}
+
+async function refreshResourceDiagnostics(force = false) {
+  const now = performance.now();
+
+  if (force || now - performanceDiagnostics.lastStorageCheckAt >= 5000) {
+    performanceDiagnostics.lastStorageCheckAt = now;
+    if (navigator.storage?.estimate) {
+      try {
+        const estimate = await navigator.storage.estimate();
+        performanceDiagnostics.storage.usage = Number(estimate.usage);
+        performanceDiagnostics.storage.quota = Number(estimate.quota);
+      } catch (_) {}
+    }
+  }
+
+  await initBatteryDiagnostics();
+}
+
+function initLongTaskDiagnostics() {
+  try {
+    if (
+      typeof PerformanceObserver !== 'undefined' &&
+      PerformanceObserver.supportedEntryTypes?.includes('longtask')
+    ) {
+      performanceDiagnostics.longTaskSupported = true;
+      const observer = new PerformanceObserver(list => {
+        for (const entry of list.getEntries()) {
+          performanceDiagnostics.longTasks += 1;
+          performanceDiagnostics.longTaskTotalMs += entry.duration;
+          performanceDiagnostics.longTaskMaxMs = Math.max(
+            performanceDiagnostics.longTaskMaxMs,
+            entry.duration
+          );
+        }
+      });
+      observer.observe({ entryTypes: ['longtask'] });
+    }
+  } catch (_) {}
+}
+
+function currentPerformanceSnapshot() {
+  const fpsAvg = average(performanceDiagnostics.fps);
+  const fpsMin = performanceDiagnostics.fps.length
+    ? Math.min(...performanceDiagnostics.fps)
+    : 0;
+  const ipsAvg = average(performanceDiagnostics.ips);
+  const latencyValues = performanceDiagnostics.latency;
+  const latencyAvg = average(latencyValues);
+  const latencySorted = latencyValues.length
+    ? [...latencyValues].sort((a, b) => a - b)
+    : [];
+  const latencyAt = q => {
+    if (!latencySorted.length) return null;
+    const index = Math.min(
+      latencySorted.length - 1,
+      Math.max(0, Math.ceil(q * latencySorted.length) - 1)
+    );
+    return latencySorted[index];
+  };
+  const battery = performanceDiagnostics.battery;
+  const camera = performanceDiagnostics.cameraSettings || {};
+  const jsMemory = performance.memory?.usedJSHeapSize;
+
+  return {
+    timestamp: new Date().toISOString(),
+    platform: platformDescription(),
+    logicalProcessors: DEVICE.cores || null,
+    deviceMemoryGB: DEVICE.memoryGB || null,
+    screenWidth: screen.width,
+    screenHeight: screen.height,
+    devicePixelRatio: window.devicePixelRatio || 1,
+    backend: $('provider')?.textContent || devicePerformanceProfile().provider.toUpperCase(),
+    model: session ? modelLabel(currentModelKey) : null,
+    inputSize: state.inputSize,
+    cameraWidth: camera.width || video.videoWidth || null,
+    cameraHeight: camera.height || video.videoHeight || null,
+    cameraFrameRateReported: camera.frameRate || null,
+    fpsCurrent: Number((currentCameraFps || currentFps).toFixed(2)),
+    renderFpsCurrent: Number(currentFps.toFixed(2)),
+    fpsAverage: Number(fpsAvg.toFixed(2)),
+    fpsMin: Number(fpsMin.toFixed(2)),
+    ipsCurrent: Number(currentIps.toFixed(2)),
+    ipsAverage: Number(ipsAvg.toFixed(2)),
+    latencyCurrentMs: Number(lastLatencyMs.toFixed(2)),
+    latencyAverageMs: Number(latencyAvg.toFixed(2)),
+    latencyMinMs: latencySorted.length
+      ? Number(latencySorted[0].toFixed(2))
+      : null,
+    latencyMaxMs: latencySorted.length
+      ? Number(latencySorted.at(-1).toFixed(2))
+      : null,
+    latencyP50Ms: latencySorted.length
+      ? Number(latencyAt(.50).toFixed(2))
+      : null,
+    latencyP95Ms: latencySorted.length
+      ? Number(latencyAt(.95).toFixed(2))
+      : null,
+    latencyP99Ms: latencySorted.length
+      ? Number(latencyAt(.99).toFixed(2))
+      : null,
+    pipelineCurrentMs: Number(lastPipelineMs.toFixed(2)),
+    pipelineAverageMs: Number(average(performanceDiagnostics.pipeline).toFixed(2)),
+    aiDutyCyclePercent: Number(
+      Math.min(
+        100,
+        average(performanceDiagnostics.pipeline) *
+          Math.max(0, ipsAvg) /
+          10
+      ).toFixed(1)
+    ),
+    preprocessAverageMs: Number(average(performanceDiagnostics.preprocess).toFixed(2)),
+    postprocessAverageMs: Number(average(performanceDiagnostics.postprocess).toFixed(2)),
+    longTasks: performanceDiagnostics.longTaskSupported ? performanceDiagnostics.longTasks : null,
+    longTaskMaxMs: performanceDiagnostics.longTaskSupported
+      ? Number(performanceDiagnostics.longTaskMaxMs.toFixed(2))
+      : null,
+    inferenceErrors: performanceDiagnostics.inferenceErrors,
+    jsHeapUsedBytes: Number.isFinite(jsMemory) ? jsMemory : null,
+    storageUsageBytes: Number.isFinite(performanceDiagnostics.storage.usage)
+      ? performanceDiagnostics.storage.usage
+      : null,
+    storageQuotaBytes: Number.isFinite(performanceDiagnostics.storage.quota)
+      ? performanceDiagnostics.storage.quota
+      : null,
+    batteryPercent: battery ? Number((battery.level * 100).toFixed(1)) : null,
+    charging: battery ? Boolean(battery.charging) : null,
+    batteryDrainPercentPerHour: batteryDrainRatePerHour(),
+    uptimeMs: Math.round(performance.now() - performanceDiagnostics.appStartedAt),
+    modelLoad: { ...performanceDiagnostics.modelLoad }
+  };
+}
+
+function setBenchmarkControls(active) {
+  for (const id of ['modelSelect', 'resolutionSelect', 'performanceMode', 'frameSkip', 'loadDefaultBtn']) {
+    if ($(id)) $(id).disabled = active;
+  }
+  if ($('benchmarkDuration')) $('benchmarkDuration').disabled = active;
+  if ($('startBenchmarkBtn')) $('startBenchmarkBtn').disabled = active;
+  if ($('stopBenchmarkBtn')) $('stopBenchmarkBtn').disabled = !active;
+}
+
+function benchmarkSummary() {
+  if (!benchmarkState.samples.length) return null;
+
+  const values = key => benchmarkState.samples
+    .map(row => Number(row[key]))
+    .filter(Number.isFinite);
+
+  const latency = values('latencyCurrentMs');
+  const fps = values('fpsCurrent');
+  const ips = values('ipsCurrent');
+  const pipeline = values('pipelineCurrentMs');
+  const last = benchmarkState.samples.at(-1);
+
+  const endPerf = benchmarkState.active
+    ? performance.now()
+    : (benchmarkState.completedAt || performance.now());
+
+  return {
+    testId: benchmarkState.testId,
+    startedAt: benchmarkState.startedWallTime,
+    completedAt: benchmarkState.completedWallTime || new Date().toISOString(),
+    durationSec: Number(((endPerf - benchmarkState.startedAt) / 1000).toFixed(1)),
+    samples: benchmarkState.samples.length,
+    configuration: {
+      model: last?.model || modelLabel(currentModelKey),
+      inputSize: last?.inputSize || state.inputSize,
+      backend: last?.backend || $('provider')?.textContent || '',
+      cameraWidth: last?.cameraWidth || null,
+      cameraHeight: last?.cameraHeight || null
+    },
+    fpsAverage: Number(average(fps).toFixed(2)),
+    fpsMin: fps.length ? Number(Math.min(...fps).toFixed(2)) : null,
+    ipsAverage: Number(average(ips).toFixed(2)),
+    latencyAverageMs: Number(average(latency).toFixed(2)),
+    latencyP50Ms: latency.length ? Number(percentile(latency, .50).toFixed(2)) : null,
+    latencyP95Ms: latency.length ? Number(percentile(latency, .95).toFixed(2)) : null,
+    latencyP99Ms: latency.length ? Number(percentile(latency, .99).toFixed(2)) : null,
+    latencyMaxMs: latency.length ? Number(Math.max(...latency).toFixed(2)) : null,
+    pipelineAverageMs: Number(average(pipeline).toFixed(2)),
+    inferenceErrors: last?.inferenceErrors ?? performanceDiagnostics.inferenceErrors,
+    longTasks: last?.longTasks ?? null,
+    batteryStartPercent: Number.isFinite(benchmarkState.batteryStartLevel)
+      ? Number((benchmarkState.batteryStartLevel * 100).toFixed(1))
+      : null,
+    batteryEndPercent: Number.isFinite(benchmarkState.batteryEndLevel)
+      ? Number((benchmarkState.batteryEndLevel * 100).toFixed(1))
+      : null
+  };
+}
+
+
+function persistBenchmarkRecovery() {
+  if (!benchmarkState.active) return;
+
+  try {
+    localStorage.setItem(
+      BENCHMARK_RECOVERY_KEY,
+      JSON.stringify({
+        active: true,
+        testId: benchmarkState.testId,
+        startedWallTime: benchmarkState.startedWallTime,
+        durationMs: benchmarkState.durationMs,
+        savedAt: new Date().toISOString(),
+        samples: benchmarkState.samples.slice(-300)
+      })
+    );
+  } catch (error) {
+    console.warn('No se pudo persistir benchmark:', error);
+  }
+}
+
+function restoreInterruptedBenchmark() {
+  try {
+    const saved = JSON.parse(
+      localStorage.getItem(BENCHMARK_RECOVERY_KEY) || 'null'
+    );
+
+    if (!saved?.active || !Array.isArray(saved.samples)) return false;
+
+    benchmarkState.active = false;
+    benchmarkState.testId = saved.testId || 'benchmark_interrumpido';
+    benchmarkState.samples = saved.samples;
+    benchmarkState.startedWallTime = saved.startedWallTime || null;
+    benchmarkState.durationMs = Number(saved.durationMs || 0);
+
+    const lastElapsed = Number(
+      benchmarkState.samples.at(-1)?.elapsedSec || 0
+    );
+
+    benchmarkState.startedAt =
+      performance.now() - lastElapsed * 1000;
+    benchmarkState.completedAt = performance.now();
+    benchmarkState.completedWallTime =
+      saved.savedAt || new Date().toISOString();
+
+    if ($('benchmarkStatus')) {
+      $('benchmarkStatus').textContent =
+        'Benchmark interrumpido · datos recuperados';
+      $('benchmarkStatus').className = 'badge warning';
+    }
+
+    if ($('downloadBenchmarkCsvBtn')) {
+      $('downloadBenchmarkCsvBtn').disabled =
+        !benchmarkState.samples.length;
+    }
+
+    if ($('downloadBenchmarkJsonBtn')) {
+      $('downloadBenchmarkJsonBtn').disabled =
+        !benchmarkState.samples.length;
+    }
+
+    localStorage.removeItem(BENCHMARK_RECOVERY_KEY);
+    return true;
+  } catch (error) {
+    console.warn('No se pudo recuperar benchmark:', error);
+    return false;
+  }
+}
+
+function recordBenchmarkSnapshot() {
+  if (!benchmarkState.active) return;
+
+  const snapshot = currentPerformanceSnapshot();
+  snapshot.elapsedSec = Number(
+    ((performance.now() - benchmarkState.startedAt) / 1000).toFixed(1)
+  );
+  benchmarkState.samples.push(snapshot);
+
+  if (benchmarkState.samples.length % 5 === 0) {
+    persistBenchmarkRecovery();
+  }
+
+  const remaining = Math.max(
+    0,
+    benchmarkState.durationMs - (performance.now() - benchmarkState.startedAt)
+  );
+
+  if ($('benchmarkStatus')) {
+    $('benchmarkStatus').textContent = `Benchmark · ${formatDuration(remaining)}`;
+    $('benchmarkStatus').className = 'badge warning';
+  }
+
+  if (remaining <= 0) stopBenchmark(true);
+}
+
+function startBenchmark() {
+  if (!session || !running) {
+    setStatus('Cargue el modelo e inicie la cámara antes de comenzar el benchmark.');
+    return;
+  }
+  if (benchmarkState.active) return;
+
+  const durationSec = Math.max(60, Number($('benchmarkDuration')?.value || 600));
+  benchmarkState.active = true;
+  benchmarkState.startedAt = performance.now();
+  benchmarkState.durationMs = durationSec * 1000;
+  benchmarkState.testId = `EPP-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  benchmarkState.startedWallTime = new Date().toISOString();
+  benchmarkState.completedAt = 0;
+  benchmarkState.completedWallTime = null;
+  benchmarkState.samples = [];
+  benchmarkState.previousPerformanceMode = state.performanceMode;
+  benchmarkState.batteryStartLevel = performanceDiagnostics.battery?.level ?? null;
+  benchmarkState.batteryEndLevel = null;
+
+  state.performanceMode = 'manual';
+  if ($('performanceMode')) $('performanceMode').value = 'manual';
+
+  setBenchmarkControls(true);
+  recordBenchmarkSnapshot();
+  persistBenchmarkRecovery();
+  benchmarkState.timer = setInterval(recordBenchmarkSnapshot, 1000);
+
+  setStatus(`Benchmark iniciado por ${durationSec / 60} min. Modelo y resolución quedan fijos.`);
+}
+
+function stopBenchmark(completed = false) {
+  if (!benchmarkState.active) return;
+
+  clearInterval(benchmarkState.timer);
+  benchmarkState.timer = null;
+
+  const snapshot = currentPerformanceSnapshot();
+  snapshot.elapsedSec = Number(
+    ((performance.now() - benchmarkState.startedAt) / 1000).toFixed(1)
+  );
+  benchmarkState.samples.push(snapshot);
+
+  benchmarkState.active = false;
+  localStorage.removeItem(BENCHMARK_RECOVERY_KEY);
+  benchmarkState.completedAt = performance.now();
+  benchmarkState.completedWallTime = new Date().toISOString();
+  benchmarkState.batteryEndLevel = performanceDiagnostics.battery?.level ?? null;
+  setBenchmarkControls(false);
+
+  state.performanceMode = benchmarkState.previousPerformanceMode || 'manual';
+  if ($('performanceMode')) $('performanceMode').value = state.performanceMode;
+
+  if ($('benchmarkStatus')) {
+    $('benchmarkStatus').textContent = completed ? 'Benchmark completado' : 'Benchmark detenido';
+    $('benchmarkStatus').className = `badge ${completed ? 'pass' : 'neutral'}`;
+  }
+
+  if ($('downloadBenchmarkCsvBtn')) {
+    $('downloadBenchmarkCsvBtn').disabled = !benchmarkState.samples.length;
+  }
+  if ($('downloadBenchmarkJsonBtn')) {
+    $('downloadBenchmarkJsonBtn').disabled = !benchmarkState.samples.length;
+  }
+
+  setStatus(
+    completed
+      ? 'Benchmark completado. Puede exportar CSV o JSON.'
+      : 'Benchmark detenido. Los datos disponibles pueden exportarse.'
+  );
+}
+
+function downloadBenchmarkCsv() {
+  if (!benchmarkState.samples.length) return;
+
+  const header = [
+    'testId','elapsedSec','timestamp','platform','logicalProcessors','deviceMemoryGB',
+    'backend','model','inputSize','cameraWidth','cameraHeight','cameraFrameRateReported',
+    'fpsCurrent','renderFpsCurrent','fpsAverage','fpsMin','ipsCurrent','ipsAverage',
+    'latencyCurrentMs','latencyAverageMs','latencyP50Ms','latencyP95Ms','latencyP99Ms',
+    'pipelineCurrentMs','pipelineAverageMs','aiDutyCyclePercent','preprocessAverageMs','postprocessAverageMs',
+    'longTasks','longTaskMaxMs','inferenceErrors','jsHeapUsedBytes','storageUsageBytes',
+    'storageQuotaBytes','batteryPercent','charging','batteryDrainPercentPerHour','uptimeMs'
+  ];
+
+  const rows = benchmarkState.samples.map(
+    sample => ({ testId: benchmarkState.testId, ...sample })
+  );
+  const lines = [header.join(',')];
+
+  for (const row of rows) {
+    lines.push(header.map(key => csvCell(row[key])).join(','));
+  }
+
+  downloadBlob(
+    `benchmark_${benchmarkState.testId}.csv`,
+    '\ufeff' + lines.join('\n'),
+    'text/csv;charset=utf-8'
+  );
+}
+
+function downloadBenchmarkJson() {
+  if (!benchmarkState.samples.length) return;
+
+  downloadBlob(
+    `benchmark_${benchmarkState.testId}.json`,
+    JSON.stringify(
+      { summary: benchmarkSummary(), samples: benchmarkState.samples },
+      null,
+      2
+    ),
+    'application/json'
+  );
+}
+
+initLongTaskDiagnostics();
+
+setInterval(() => {
+  if (running) {
+    pushPerfSample(
+      performanceDiagnostics.fps,
+      currentCameraFps || currentFps
+    );
+    pushPerfSample(performanceDiagnostics.ips, currentIps);
+  }
+  updateSystemDiagnostics();
+}, 1000);
 
 async function loadMetadata(url = 'models/epp-yolo11/metadata.json') {
   metadata = await fetch(url).then(r => {
@@ -274,7 +841,7 @@ function renderClassChecks() {
 }
 
 async function fetchModelWithProgress(url, onProgress) {
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(url, { cache: 'force-cache' });
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} al descargar ${url}`);
@@ -338,6 +905,8 @@ async function createSession(
   modelLoadInProgress = true;
   profileSwitching = true;
 
+  const modelLoadStartedAt = performance.now();
+  performanceDiagnostics.modelLoad = { downloadMs: 0, initMs: 0, warmupMs: 0, totalMs: 0 };
   let modelBytes = null;
   let newSession = null;
 
@@ -345,6 +914,7 @@ async function createSession(
     setStatus(`Preparando ${modelDescription}...`);
 
     if (typeof model === 'string') {
+      const downloadStartedAt = performance.now();
       modelBytes = await fetchModelWithProgress(
         model,
         (progress, received, total) => {
@@ -357,6 +927,7 @@ async function createSession(
           );
         }
       );
+      performanceDiagnostics.modelLoad.downloadMs = performance.now() - downloadStartedAt;
     } else if (model instanceof Uint8Array) {
       modelBytes = model;
     } else if (model instanceof ArrayBuffer) {
@@ -382,19 +953,58 @@ async function createSession(
       await new Promise(resolve => setTimeout(resolve, 250));
     }
 
-    const provider = preferredExecutionProvider();
+    let provider = preferredExecutionProvider();
 
-    setStatus(
-      `Inicializando ${modelDescription} con ${provider.toUpperCase()}...`
-    );
+    if (provider === 'webgpu' && navigator.gpu?.requestAdapter) {
+      const adapter = await navigator.gpu
+        .requestAdapter({ powerPreference: 'high-performance' })
+        .catch(() => null);
+      if (!adapter) provider = 'wasm';
+    }
 
-    newSession = await ort.InferenceSession.create(
-      modelBytes,
-      {
-        executionProviders: [provider],
-        graphOptimizationLevel: DEVICE.isIOS ? 'basic' : 'all'
+    setStatus(`Inicializando ${modelDescription} con ${provider.toUpperCase()}...`);
+    const initStartedAt = performance.now();
+
+    try {
+      newSession = await ort.InferenceSession.create(
+        modelBytes,
+        {
+          executionProviders: [provider],
+          graphOptimizationLevel: DEVICE.isIOS ? 'basic' : 'all'
+        }
+      );
+    } catch (providerError) {
+      if (provider === 'webgpu') {
+        console.warn('WebGPU no disponible/estable; se usa WASM:', providerError);
+        provider = 'wasm';
+        setStatus(`WebGPU no disponible. Inicializando ${modelDescription} con WASM...`);
+        newSession = await ort.InferenceSession.create(
+          modelBytes,
+          {
+            executionProviders: ['wasm'],
+            graphOptimizationLevel: DEVICE.isMobile ? 'basic' : 'all'
+          }
+        );
+      } else {
+        throw providerError;
       }
-    );
+    }
+
+    performanceDiagnostics.modelLoad.initMs = performance.now() - initStartedAt;
+
+    // Si WebGPU falla en Android, aplicamos inmediatamente el perfil WASM conservador.
+    if (DEVICE.isAndroid && provider === 'wasm') {
+      state.performanceMode = 'manual';
+      state.inferenceMinIntervalMs = Math.max(state.inferenceMinIntervalMs, 700);
+      if ($('performanceMode')) $('performanceMode').value = 'manual';
+      if ($('frameSkip')) $('frameSkip').value = '700';
+    }
+    if (DEVICE.isIOS && provider === 'wasm') {
+      state.performanceMode = 'manual';
+      state.inferenceMinIntervalMs = Math.max(state.inferenceMinIntervalMs, 1500);
+      if ($('performanceMode')) $('performanceMode').value = 'manual';
+      if ($('frameSkip')) $('frameSkip').value = '1500';
+    }
 
     // Ya no necesitamos conservar los bytes descargados después de crear la sesión.
     // Es especialmente importante en móviles para reducir el pico de memoria.
@@ -402,6 +1012,7 @@ async function createSession(
     await new Promise(resolve => setTimeout(resolve, 0));
 
     if (!DEVICE.isIOS) {
+      const warmupStartedAt = performance.now();
       const zero = new Float32Array(3 * inputSize * inputSize);
       const inputName = newSession.inputNames[0];
 
@@ -415,7 +1026,10 @@ async function createSession(
         try { value.dispose?.(); } catch (_) {}
       }
       try { warmInput.dispose?.(); } catch (_) {}
+      performanceDiagnostics.modelLoad.warmupMs = performance.now() - warmupStartedAt;
     }
+
+    performanceDiagnostics.modelLoad.totalMs = performance.now() - modelLoadStartedAt;
 
     session = newSession;
     newSession = null;
@@ -439,7 +1053,15 @@ async function createSession(
     currentIps = 0;
     $('ips').textContent = '0.0 IPS';
 
-    resetTracking(`modelo ${modelDescription}`);
+    if (!running) {
+      resetTracking(`modelo ${modelDescription}`);
+    } else {
+      // Los modelos del catálogo comparten las mismas clases; se conservan
+      // Persona ID y EPP enclavados al cambiar resolución/modelo en vivo.
+      if ($('trackerStatus')) {
+        $('trackerStatus').textContent = 'ACTIVO · memoria conservada';
+      }
+    }
 
     setStatus(`${modelDescription} activo con ${provider.toUpperCase()}.`);
     return true;
@@ -537,7 +1159,7 @@ function markInferenceComplete() {
 function recordLatencyForAutoTune(ms) {
   latencyHistory.push(ms);
   if (latencyHistory.length > 10) latencyHistory.shift();
-  if (state.performanceMode !== 'auto' || latencyHistory.length < 6 || profileSwitching) return;
+  if (benchmarkState.active || state.performanceMode !== 'auto' || latencyHistory.length < 6 || profileSwitching) return;
   const now = performance.now();
   if (now - lastProfileSwitchAt < 8000) return;
 
@@ -567,7 +1189,7 @@ function resetTracking(reason = 'manual') {
   lastPeople = [];
   tracks = [];
   personEvidence.clear();
-  nextTrackId = 1;
+  // Mantiene el contador de ID durante toda la sesión para no reutilizar personas históricas.
 
   inferenceTimestamps = [];
   currentIps = 0;
@@ -624,6 +1246,47 @@ function drawImageLayer() {
 function syncStageAspect() {
   const [w, h] = sourceDimensions();
   if (w && h) $('stage').style.aspectRatio = `${w} / ${h}`;
+}
+
+
+function startCameraFpsMeter() {
+  const token = ++cameraFpsMeterToken;
+  cameraFrameCounter = 0;
+  currentCameraFps = 0;
+  cameraFpsLastAt = performance.now();
+
+  if (typeof video.requestVideoFrameCallback !== 'function') {
+    const reported = performanceDiagnostics.cameraSettings?.frameRate;
+    currentCameraFps = Number.isFinite(reported)
+      ? Number(reported)
+      : 0;
+    return;
+  }
+
+  const tick = now => {
+    if (
+      token !== cameraFpsMeterToken ||
+      !running ||
+      sourceType !== 'video'
+    ) {
+      return;
+    }
+
+    cameraFrameCounter += 1;
+
+    if (now - cameraFpsLastAt >= 1000) {
+      currentCameraFps =
+        cameraFrameCounter * 1000 /
+        (now - cameraFpsLastAt);
+
+      cameraFrameCounter = 0;
+      cameraFpsLastAt = now;
+    }
+
+    video.requestVideoFrameCallback(tick);
+  };
+
+  video.requestVideoFrameCallback(tick);
 }
 
 async function startCamera() {
@@ -687,12 +1350,14 @@ async function startCamera() {
   await refreshCameras(false);
   const activeTrack = stream.getVideoTracks()[0];
   const settings = activeTrack?.getSettings?.() || {};
+  performanceDiagnostics.cameraSettings = { ...settings };
   if (settings.deviceId) {
     selectedCameraId = settings.deviceId;
     localStorage.setItem('eppSelectedCameraId', selectedCameraId);
     if ($('cameraSelect')) $('cameraSelect').value = selectedCameraId;
   }
 
+  startCameraFpsMeter();
   startProcessingLoops();
   updateSystemDiagnostics();
 }
@@ -729,7 +1394,10 @@ async function openImage(file) {
 }
 
 function stopSource(clearRoi = false) {
+  if (benchmarkState.active) stopBenchmark(false);
   running = false;
+  cameraFpsMeterToken += 1;
+  currentCameraFps = 0;
   resetTracking('fuente detenida');
   if (clearRoi) state.roi = null;
   if (stream) {
@@ -832,7 +1500,9 @@ function getInferenceWorkspace(size) {
     !inferenceWorkspace.input ||
     !inferenceWorkspace.tensor
   ) {
-    const workCanvas = new OffscreenCanvas(size, size);
+    const workCanvas = (!DEVICE.isIOS && typeof OffscreenCanvas !== 'undefined')
+      ? new OffscreenCanvas(size, size)
+      : Object.assign(document.createElement('canvas'), { width: size, height: size });
     const workCtx = workCanvas.getContext('2d', {
       willReadFrequently: true,
       alpha: false,
@@ -869,6 +1539,7 @@ async function infer() {
   const offCtx = workspace.ctx;
   const input = workspace.input;
   const inputTensor = workspace.tensor;
+  const preprocessStartedAt = performance.now();
 
   offCtx.fillStyle = '#000';
   offCtx.fillRect(0, 0, size, size);
@@ -895,6 +1566,9 @@ async function infer() {
     input[2 * plane + i] = rgba[p + 2] * (1 / 255);
   }
 
+  lastPreprocessMs = performance.now() - preprocessStartedAt;
+  pushPerfSample(performanceDiagnostics.preprocess, lastPreprocessMs);
+
   const inferenceStart = performance.now();
   const inputName = session.inputNames[0];
   const output = await session.run({
@@ -902,10 +1576,12 @@ async function infer() {
   });
 
   lastLatencyMs = performance.now() - inferenceStart;
+  pushPerfSample(performanceDiagnostics.latency, lastLatencyMs);
   $('latency').textContent = `${lastLatencyMs.toFixed(1)} ms`;
   recordLatencyForAutoTune(lastLatencyMs);
 
   const tensor = output[session.outputNames[0]];
+  const postprocessStartedAt = performance.now();
   const decoded = decode(
     tensor,
     scale,
@@ -920,7 +1596,11 @@ async function infer() {
   // de memoria entre inferencias largas.
   try { tensor.dispose?.(); } catch (_) {}
 
+  lastPostprocessMs = performance.now() - postprocessStartedAt;
+  pushPerfSample(performanceDiagnostics.postprocess, lastPostprocessMs);
+
   lastPipelineMs = performance.now() - totalStart;
+  pushPerfSample(performanceDiagnostics.pipeline, lastPipelineMs);
   if ($('pipelineLatency')) {
     $('pipelineLatency').textContent = `${lastPipelineMs.toFixed(1)} ms`;
   }
@@ -1056,21 +1736,59 @@ function predictTrackBox(track) {
 }
 
 function updateTracks(detections) {
+  const now = performance.now();
   const unmatchedTracks = new Set(tracks.map((_, i) => i));
   const unmatchedDetections = new Set(detections.map((_, i) => i));
   const candidates = [];
 
   for (let ti = 0; ti < tracks.length; ti++) {
-    const predicted = predictTrackBox(tracks[ti]);
+    const track = tracks[ti];
+    const predicted = predictTrackBox(track);
+    const lostMs = Math.max(0, now - track.lastSeen);
+
     for (let di = 0; di < detections.length; di++) {
-      if (tracks[ti].classId !== detections[di][5]) continue;
+      if (track.classId !== detections[di][5]) continue;
+
       const person = detections[di][5] === metadata.personClass;
       const overlap = iou(predicted, detections[di]);
       const distance = normalizedCenterDistance(predicted, detections[di]);
-      const maxDistance = person ? 0.85 : 0.46;
-      const minOverlap = person ? 0.02 : 0.10;
-      if (overlap >= minOverlap || distance <= maxDistance) {
-        const score = overlap * 1.8 + Math.max(0, maxDistance - distance);
+
+      const recoveryGrowth = person
+        ? Math.min(0.70, (lostMs / Math.max(1, state.personHoldMs)) * 0.70)
+        : 0;
+
+      const maxDistance = person ? 0.85 + recoveryGrowth : 0.46;
+      const minOverlap = person ? 0.01 : 0.10;
+
+      const oldArea = Math.max(
+        1,
+        (predicted[2] - predicted[0]) * (predicted[3] - predicted[1])
+      );
+      const newArea = Math.max(
+        1,
+        (detections[di][2] - detections[di][0]) *
+        (detections[di][3] - detections[di][1])
+      );
+      const sizeRatio = Math.max(oldArea, newArea) / Math.min(oldArea, newArea);
+      const maxSizeRatio = person ? 4.2 : 2.8;
+
+      if (
+        (overlap >= minOverlap || distance <= maxDistance) &&
+        sizeRatio <= maxSizeRatio
+      ) {
+        const stalePenalty = person
+          ? Math.min(
+              0.55,
+              lostMs / Math.max(1, state.personHoldMs) * 0.55
+            )
+          : 0;
+
+        const score =
+          overlap * 1.9 +
+          Math.max(0, maxDistance - distance) -
+          Math.max(0, sizeRatio - 1) * 0.08 -
+          stalePenalty;
+
         candidates.push({ ti, di, score });
       }
     }
@@ -1080,6 +1798,7 @@ function updateTracks(detections) {
 
   for (const { ti, di } of candidates) {
     if (!unmatchedTracks.has(ti) || !unmatchedDetections.has(di)) continue;
+
     const track = tracks[ti];
     const det = detections[di];
     const [oldCx, oldCy] = boxCenter(track.box);
@@ -1087,16 +1806,24 @@ function updateTracks(detections) {
     const person = det[5] === metadata.personClass;
     const a = person ? state.smoothingPerson : state.smoothingEpp;
 
-    for (let k = 0; k < 4; k++) track.box[k] = track.box[k] * (1 - a) + det[k] * a;
-    track.box[4] = track.box[4] * 0.72 + det[4] * 0.28;
+    for (let k = 0; k < 4; k++) {
+      track.box[k] = track.box[k] * (1 - a) + det[k] * a;
+    }
+
+    track.box[4] = track.box[4] * 0.62 + det[4] * 0.38;
     track.box[5] = det[5];
+
     const measuredVx = newCx - oldCx;
     const measuredVy = newCy - oldCy;
-    track.velocity[0] = track.velocity[0] * 0.65 + measuredVx * 0.35;
-    track.velocity[1] = track.velocity[1] * 0.65 + measuredVy * 0.35;
+
+    track.velocity[0] = track.velocity[0] * 0.60 + measuredVx * 0.40;
+    track.velocity[1] = track.velocity[1] * 0.60 + measuredVy * 0.40;
     track.missed = 0;
     track.hits += 1;
-    track.lastSeen = performance.now();
+    track.lastSeen = now;
+    track.recovered = track.lostSince != null;
+    track.lostSince = null;
+
     unmatchedTracks.delete(ti);
     unmatchedDetections.delete(di);
   }
@@ -1104,16 +1831,28 @@ function updateTracks(detections) {
   for (const ti of unmatchedTracks) {
     const track = tracks[ti];
     track.missed += 1;
-    if (track.classId === metadata.personClass && track.missed <= 8) {
-      track.box = predictTrackBox(track);
-      track.velocity[0] *= 0.86;
-      track.velocity[1] *= 0.86;
+    if (track.lostSince == null) track.lostSince = now;
+
+    if (
+      track.classId === metadata.personClass &&
+      (now - track.lastSeen) <= state.personHoldMs
+    ) {
+      if (track.missed <= 10) {
+        track.box = predictTrackBox(track);
+        track.velocity[0] *= 0.82;
+        track.velocity[1] *= 0.82;
+      } else {
+        track.velocity[0] = 0;
+        track.velocity[1] = 0;
+      }
     }
-    track.box[4] *= 0.985;
+
+    track.box[4] *= track.classId === metadata.personClass ? 0.995 : 0.98;
   }
 
   for (const di of unmatchedDetections) {
     const det = detections[di];
+
     tracks.push({
       id: nextTrackId++,
       classId: det[5],
@@ -1121,14 +1860,19 @@ function updateTracks(detections) {
       missed: 0,
       hits: 1,
       velocity: [0, 0],
-      lastSeen: performance.now()
+      lastSeen: now,
+      lostSince: null,
+      recovered: false
     });
   }
 
-  const trackNow = performance.now();
   tracks = tracks.filter(track => {
-    const holdMs = track.classId === metadata.personClass ? state.personHoldMs : state.eppHoldMs;
-    return (trackNow - track.lastSeen) <= holdMs;
+    const holdMs =
+      track.classId === metadata.personClass
+        ? state.personHoldMs
+        : state.eppHoldMs;
+
+    return (now - track.lastSeen) <= holdMs;
   });
 
   return tracks.map(track => {
@@ -1136,6 +1880,11 @@ function updateTracks(detections) {
     box.trackId = track.id;
     box.missed = track.missed;
     box.hits = track.hits;
+    box.lastSeen = track.lastSeen;
+    box.lostMs = Math.max(0, now - track.lastSeen);
+    box.temporarilyLost =
+      track.classId === metadata.personClass && track.missed > 0;
+    box.recovered = Boolean(track.recovered);
     return box;
   });
 }
@@ -1149,7 +1898,10 @@ function rawAssociate(boxes) {
       rawEpp: new Map(),
       epp: new Map(),
       ok: false,
-      missing: []
+      missing: [],
+      temporarilyLost: Boolean(box.temporarilyLost),
+      lostMs: Number(box.lostMs || 0),
+      eppState: new Map()
     }));
 
   for (const item of boxes.filter(box => box[5] !== metadata.personClass && (box.missed || 0) <= 4)) {
@@ -1187,53 +1939,207 @@ function rawAssociate(boxes) {
 
 function stabilizeCompliance(people) {
   const activeIds = new Set(people.map(p => p.id));
+  const now = performance.now();
 
   for (const person of people) {
     let memory = personEvidence.get(person.id);
+
     if (!memory) {
-      memory = { evidence: new Map(), present: new Map(), confidence: new Map(), lastSeen: performance.now() };
+      memory = {
+        states: new Map(),
+        evidence: new Map(),
+        present: new Map(),
+        confidence: new Map(),
+        createdAt: now,
+        lastSeen: now,
+        lastVisibleAt: now
+      };
       personEvidence.set(person.id, memory);
     }
-    memory.lastSeen = performance.now();
+
+    memory.lastSeen = now;
+
+    const personVisible = !person.temporarilyLost;
+    if (personVisible) memory.lastVisibleAt = now;
 
     for (const classId of state.required) {
       const rawDetected = person.rawEpp.has(classId);
+      const currentDetection = person.rawEpp.get(classId);
 
-      // La evidencia temporal se usa solo internamente para estabilizar.
-      // La confianza mostrada al usuario proviene exclusivamente de YOLO.
-      if (rawDetected) {
-        const currentDetection = person.rawEpp.get(classId);
-        if (currentDetection && Number.isFinite(currentDetection[4])) {
-          memory.confidence.set(classId, currentDetection[4]);
+      if (
+        rawDetected &&
+        currentDetection &&
+        Number.isFinite(currentDetection[4])
+      ) {
+        memory.confidence.set(classId, currentDetection[4]);
+      }
+
+      let item = memory.states.get(classId);
+
+      if (!item) {
+        item = {
+          verified: false,
+          verifyingSince: null,
+          lastPositiveAt: null,
+          positiveHits: 0,
+          absenceSince: null,
+          verifiedAt: null,
+          lastStateChangeAt: now
+        };
+        memory.states.set(classId, item);
+      }
+
+      // Si se pierde temporalmente la persona, se congela el estado de EPP.
+      if (personVisible) {
+        if (rawDetected) {
+          if (
+            item.lastPositiveAt == null ||
+            now - item.lastPositiveAt >
+              Math.max(2000, state.eppConfirmMs * 1.25)
+          ) {
+            item.verifyingSince = now;
+            item.positiveHits = 1;
+          } else {
+            item.positiveHits += 1;
+            if (item.verifyingSince == null) {
+              item.verifyingSince = item.lastPositiveAt;
+            }
+          }
+
+          item.lastPositiveAt = now;
+          item.absenceSince = null;
+
+          if (!item.verified) {
+            const confirmElapsed =
+              now - (item.verifyingSince ?? now);
+
+            if (
+              item.positiveHits >= state.eppMinConfirmHits &&
+              confirmElapsed >= state.eppConfirmMs
+            ) {
+              item.verified = true;
+              item.verifiedAt = now;
+              item.lastStateChangeAt = now;
+            }
+          }
+        } else {
+          if (item.verified) {
+            if (item.absenceSince == null) {
+              item.absenceSince = now;
+            }
+
+            // Solo desenclava si la persona sigue visible y la ausencia
+            // del EPP es continua durante el tiempo configurado.
+            const latchExpired =
+              item.lastPositiveAt == null ||
+              now - item.lastPositiveAt >= state.eppLatchHoldMs;
+
+            const absenceConfirmed =
+              now - item.absenceSince >= state.eppAbsenceConfirmMs;
+
+            if (latchExpired && absenceConfirmed) {
+              item.verified = false;
+              item.verifyingSince = null;
+              item.positiveHits = 0;
+              item.verifiedAt = null;
+              item.lastStateChangeAt = now;
+            }
+          } else if (
+            item.lastPositiveAt == null ||
+            now - item.lastPositiveAt >
+              Math.max(2000, state.eppConfirmMs * 1.25)
+          ) {
+            item.verifyingSince = null;
+            item.positiveHits = 0;
+          }
         }
       }
 
-      let value = memory.evidence.get(classId) || 0;
-      value = rawDetected
-        ? Math.min(1, value + state.eppGain)
-        : Math.max(0, value - state.eppDecay);
-      memory.evidence.set(classId, value);
+      const confirmProgress = item.verified
+        ? 1
+        : item.verifyingSince == null
+          ? 0
+          : Math.min(
+              0.99,
+              (now - item.verifyingSince) /
+                Math.max(1, state.eppConfirmMs)
+            );
 
-      const wasPresent = memory.present.get(classId) || false;
-      const isPresent = wasPresent ? value >= state.eppOffThreshold : value >= state.eppOnThreshold;
-      memory.present.set(classId, isPresent);
+      memory.evidence.set(classId, confirmProgress);
+      memory.present.set(classId, item.verified);
 
-      if (isPresent) {
-        const current = person.rawEpp.get(classId);
-        const synthetic = current || [person.box[0], person.box[1], person.box[0], person.box[1], value, classId];
+      if (item.verified) {
+        const synthetic =
+          currentDetection ||
+          [
+            person.box[0],
+            person.box[1],
+            person.box[0],
+            person.box[1],
+            memory.confidence.get(classId) || 0,
+            classId
+          ];
+
         person.epp.set(classId, synthetic);
       }
+
+      const status = item.verified
+        ? (item.absenceSince != null ? 'held' : 'verified')
+        : (
+            item.verifyingSince != null &&
+            item.positiveHits > 0
+              ? 'verifying'
+              : 'missing'
+          );
+
+      person.eppState.set(classId, {
+        status,
+        verified: item.verified,
+        positiveHits: item.positiveHits,
+        confirmElapsedMs:
+          item.verifyingSince == null
+            ? 0
+            : Math.max(0, now - item.verifyingSince),
+        absenceElapsedMs:
+          item.absenceSince == null
+            ? 0
+            : Math.max(0, now - item.absenceSince),
+        confidence: memory.confidence.get(classId) ?? null
+      });
     }
 
-    person.missing = [...state.required].filter(classId => !memory.present.get(classId));
+    person.missing = [...state.required].filter(
+      classId => !memory.present.get(classId)
+    );
+
+    const hasVerifyingEpp = [...state.required].some(
+      classId =>
+        person.eppState.get(classId)?.status === 'verifying'
+    );
+    const initialGrace =
+      personVisible &&
+      now - memory.createdAt <
+        Math.max(2000, state.eppConfirmMs + 500);
+
     person.ok = person.missing.length === 0;
+    person.pending =
+      !person.ok &&
+      (initialGrace || hasVerifyingEpp);
+
     person.evidence = memory.evidence;
     person.yoloConfidence = memory.confidence;
   }
 
-  const now = performance.now();
+  const retentionMs =
+    Math.max(state.personHoldMs, state.eppLatchHoldMs) + 1500;
+
   for (const [id, memory] of personEvidence) {
-    if (!activeIds.has(id) && now - memory.lastSeen > 5000) personEvidence.delete(id);
+    if (
+      !activeIds.has(id) &&
+      now - memory.lastSeen > retentionMs
+    ) {
+      personEvidence.delete(id);
+    }
   }
 
   return people;
@@ -1292,10 +2198,37 @@ function render(boxes = lastBoxes, people = lastPeople, updateUi = true) {
   for (const box of boxes) {
     if (box[5] !== metadata.personClass || !state.visible.has(box[5])) continue;
     const person = personMap.get(box.trackId) || people.find(p => p.id === box.trackId);
-    const color = person?.ok ? '#22d47b' : '#ff5d67';
-    const status = person?.ok ? 'CUMPLE' : 'NO CUMPLE';
-    const label = `Persona ${person?.id || box.trackId || ''} · ${status} · ${(box[4] * 100).toFixed(0)}%`;
-    drawDetectionBox(box, color, label, Math.max(3, width / 420), 1);
+    const color = person?.pending
+      ? '#ffd166'
+      : person?.ok
+        ? '#22d47b'
+        : '#ff5d67';
+    const status = person?.pending
+      ? 'VERIFICANDO'
+      : person?.ok
+        ? 'CUMPLE'
+        : 'NO CUMPLE';
+    const adminLabel = `Persona ${person?.id || box.trackId || ''} · ${status}`;
+    const monitorLabel = status;
+    const lost = Boolean(person?.temporarilyLost);
+    const label = `${adminUnlocked ? adminLabel : monitorLabel}${lost ? ' · seguimiento' : ''}`;
+    const alpha = lost
+      ? Math.max(
+          0.28,
+          1 -
+            (Number(person?.lostMs || 0) /
+              Math.max(1, state.personHoldMs)) *
+              0.72
+        )
+      : 1;
+
+    drawDetectionBox(
+      box,
+      color,
+      label,
+      Math.max(3, width / 420),
+      alpha
+    );
   }
 
   if (updateUi) {
@@ -1308,7 +2241,8 @@ function renderCompliance(people) {
   const container = $('persons');
 
   if (!people.length) {
-    container.innerHTML = '<p class="empty">No se han detectado personas.</p>';
+    container.innerHTML =
+      '<p class="empty">No se han detectado personas.</p>';
     $('globalCompliance').textContent = 'SIN PERSONAS';
     $('globalCompliance').className = 'compliance neutral';
     updateMonitorView([]);
@@ -1320,41 +2254,122 @@ function renderCompliance(people) {
 
   for (const person of people) {
     allComply &&= person.ok;
+
     const card = document.createElement('article');
-    card.className = 'person';
+    card.className =
+      `person${person.temporarilyLost ? ' temporarily-lost' : ''}`;
+
+    const personState = person.temporarilyLost
+      ? `<span class="person-state">Seguimiento retenido · ${(person.lostMs / 1000).toFixed(1)} s</span>`
+      : '';
+
     card.innerHTML = `
       <div class="person-head">
-        <b>Persona ${person.id}</b>
-        <span class="badge ${person.ok ? 'pass' : 'fail'}">${person.ok ? 'CUMPLE' : 'NO CUMPLE'}</span>
+        <div>
+          <b>Persona ${person.id}</b>
+          ${personState}
+        </div>
+        <span class="badge ${
+          person.temporarilyLost
+            ? 'warning'
+            : person.pending
+              ? 'warning'
+              : person.ok
+                ? 'pass'
+                : 'fail'
+        }">
+          ${
+            person.temporarilyLost
+              ? 'TEMPORAL'
+              : person.pending
+                ? 'VERIFICANDO'
+                : person.ok
+                  ? 'CUMPLE'
+                  : 'NO CUMPLE'
+          }
+        </span>
       </div>
+
       ${[...state.required].map(classId => {
         const detected = person.epp.has(classId);
+        const eppState =
+          person.eppState?.get(classId) ||
+          { status: detected ? 'verified' : 'missing' };
 
-        // Mostrar la última confianza REAL de YOLO, no la evidencia temporal.
         const currentRaw = person.rawEpp?.get(classId);
-        const confidence = currentRaw?.[4] ?? person.yoloConfidence?.get(classId);
+        const confidence =
+          currentRaw?.[4] ??
+          person.yoloConfidence?.get(classId);
 
-        let statusText = '✗ No detectado';
-        if (detected) {
+        let statusText = '✗ No verificado';
+        let statusClass = 'no';
+
+        if (eppState.status === 'verifying') {
+          const progress = Math.min(
+            100,
+            100 *
+              (eppState.confirmElapsedMs || 0) /
+              Math.max(1, state.eppConfirmMs)
+          );
+
+          statusText = `… Verificando ${progress.toFixed(0)}%`;
+          statusClass = 'verifying';
+        } else if (eppState.status === 'held') {
+          const absenceRemaining = Math.max(
+            0,
+            state.eppAbsenceConfirmMs -
+              (eppState.absenceElapsedMs || 0)
+          );
+          const latchRemaining = Math.max(
+            0,
+            state.eppLatchHoldMs -
+              (eppState.absenceElapsedMs || 0)
+          );
+          const remaining = Math.max(
+            absenceRemaining,
+            latchRemaining
+          );
+
+          statusText =
+            `✓ Enclavado · revisión ${Math.ceil(remaining / 1000)} s`;
+          statusClass = 'held';
+        } else if (detected) {
           statusText = Number.isFinite(confidence)
-            ? `✓ Detectado · ${(confidence * 100).toFixed(0)}%`
-            : '✓ Detectado';
+            ? `✓ Verificado · ${(confidence * 100).toFixed(0)}%`
+            : '✓ Verificado';
+          statusClass = 'yes';
         }
 
         return `
           <div class="ppe-row">
             <span>${metadata.classes[classId]}</span>
-            <b class="${detected ? 'yes' : 'no'}">${statusText}</b>
+            <b class="${statusClass}">${statusText}</b>
           </div>`;
       }).join('')}
     `;
+
     container.appendChild(card);
   }
 
-  $('globalCompliance').textContent = allComply ? 'CUMPLE' : 'NO CUMPLE';
-  $('globalCompliance').className = `compliance ${allComply ? 'pass' : 'fail'}`;
+  const hasDefiniteFailure = people.some(
+    person => !person.ok && !person.pending
+  );
+  const hasPending = people.some(person => person.pending);
+
+  if (allComply) {
+    $('globalCompliance').textContent = 'CUMPLE';
+    $('globalCompliance').className = 'compliance pass';
+  } else if (!hasDefiniteFailure && hasPending) {
+    $('globalCompliance').textContent = 'VERIFICANDO';
+    $('globalCompliance').className = 'compliance warning';
+  } else {
+    $('globalCompliance').textContent = 'NO CUMPLE';
+    $('globalCompliance').className = 'compliance fail';
+  }
+
   updateMonitorView(people);
 }
+
 
 
 
@@ -1457,7 +2472,7 @@ function lockAdmin() {
 
 function factoryConfigFromUi() {
   return {
-    version: 1,
+    version: 2,
     company: $('reportProject')?.value.trim() || '',
     area: $('reportArea')?.value.trim() || '',
     owner: $('reportOwner')?.value.trim() || '',
@@ -1470,6 +2485,10 @@ function factoryConfigFromUi() {
     inputSize: Number($('resolutionSelect')?.value || state.inputSize || 480),
     performanceMode: $('performanceMode')?.value || state.performanceMode,
     inferenceMinIntervalMs: Number($('frameSkip')?.value || state.inferenceMinIntervalMs || 0),
+    personRecoverySec: Number($('personRecoverySec')?.value || state.personHoldMs / 1000 || 10),
+    eppConfirmSec: Number($('eppConfirmSec')?.value || state.eppConfirmMs / 1000 || 2),
+    eppLatchSec: Number($('eppLatchSec')?.value || state.eppLatchHoldMs / 1000 || 10),
+    eppAbsenceSec: Number($('eppAbsenceSec')?.value || state.eppAbsenceConfirmMs / 1000 || 5),
     reportSampleIntervalSec: Number($('reportSampleInterval')?.value || 5),
     evidenceEnabled: Boolean($('evidenceEnabled')?.checked),
     evidenceCooldownSec: Number($('evidenceCooldown')?.value || 30),
@@ -1537,6 +2556,42 @@ function loadFactoryConfig() {
       if ($('frameSkip')) $('frameSkip').value = String(config.inferenceMinIntervalMs);
     }
 
+    const personRecoverySec = Number(config.personRecoverySec ?? 10);
+    const eppConfirmSec = Number(config.eppConfirmSec ?? 2);
+    const eppLatchSec = Number(config.eppLatchSec ?? 10);
+    const eppAbsenceSec = Number(config.eppAbsenceSec ?? 5);
+
+    state.personHoldMs = Math.max(
+      3000,
+      Math.min(30000, personRecoverySec * 1000)
+    );
+    state.eppConfirmMs = Math.max(
+      500,
+      Math.min(10000, eppConfirmSec * 1000)
+    );
+    state.eppLatchHoldMs = Math.max(
+      3000,
+      Math.min(30000, eppLatchSec * 1000)
+    );
+    state.eppAbsenceConfirmMs = Math.max(
+      1000,
+      Math.min(15000, eppAbsenceSec * 1000)
+    );
+
+    if ($('personRecoverySec')) {
+      $('personRecoverySec').value = String(state.personHoldMs / 1000);
+    }
+    if ($('eppConfirmSec')) {
+      $('eppConfirmSec').value = String(state.eppConfirmMs / 1000);
+    }
+    if ($('eppLatchSec')) {
+      $('eppLatchSec').value = String(state.eppLatchHoldMs / 1000);
+    }
+    if ($('eppAbsenceSec')) {
+      $('eppAbsenceSec').value =
+        String(state.eppAbsenceConfirmMs / 1000);
+    }
+
     if (Number.isFinite(config.reportSampleIntervalSec)) {
       state.reportSampleIntervalMs = Math.max(1, config.reportSampleIntervalSec) * 1000;
       if ($('reportSampleInterval')) $('reportSampleInterval').value = String(config.reportSampleIntervalSec);
@@ -1581,11 +2636,23 @@ function updateMonitorView(people) {
     return;
   }
 
-  const nonCompliant = people.filter(p => !p.ok);
-  if (!nonCompliant.length) {
+  const nonCompliant = people.filter(
+    p => !p.ok && !p.pending
+  );
+  const pending = people.filter(p => p.pending);
+
+  if (!nonCompliant.length && !pending.length) {
     status.textContent = '✓ CUMPLE';
     status.className = 'monitor-compliance pass';
     detail.textContent = `${people.length} persona${people.length === 1 ? '' : 's'} · EPP completo`;
+    return;
+  }
+
+  if (!nonCompliant.length && pending.length) {
+    status.textContent = '… VERIFICANDO';
+    status.className = 'monitor-compliance warning';
+    detail.textContent =
+      `Confirmando EPP · ${pending.length} persona${pending.length === 1 ? '' : 's'}`;
     return;
   }
 
@@ -1646,22 +2713,232 @@ async function switchToNextCamera() {
   setStatus(`Cámara activa: ${next.label || 'Cámara seleccionada'}.`);
 }
 
-function updateSystemDiagnostics() {
+function updateSystemDiagnostics(force = false) {
+  const now = performance.now();
+
+  // En modo Monitor no calculamos percentiles ni refrescamos el panel oculto.
+  // Esto reduce trabajo de CPU/GC, especialmente en iPhone/iPad.
+  if (!adminUnlocked && !benchmarkState.active && !force) {
+    return;
+  }
+
+  if (
+    !force &&
+    now - performanceDiagnostics.lastUiUpdateAt < 500
+  ) {
+    return;
+  }
+
+  performanceDiagnostics.lastUiUpdateAt = now;
+
   const profile = devicePerformanceProfile();
+  const snapshot = currentPerformanceSnapshot();
+  const battery = performanceDiagnostics.battery;
+  const storage = performanceDiagnostics.storage;
+
   const parts = [
     profile.name,
-    `Backend ${profile.provider.toUpperCase()}`,
-    DEVICE.cores ? `${DEVICE.cores} hilos lógicos` : 'CPU no reportada',
-    DEVICE.memoryGB ? `~${DEVICE.memoryGB} GB RAM reportada` : 'RAM no reportada'
+    `Backend ${snapshot.backend}`,
+    DEVICE.cores
+      ? `${DEVICE.cores} hilos lógicos`
+      : 'CPU no reportada',
+    DEVICE.memoryGB
+      ? `~${DEVICE.memoryGB} GB RAM`
+      : 'RAM no reportada'
   ];
-  if ($('deviceProfile')) $('deviceProfile').textContent = parts.join(' · ');
-  if ($('diagFps')) $('diagFps').textContent = `${currentFps.toFixed(1)} FPS`;
-  if ($('diagIps')) $('diagIps').textContent = `${currentIps.toFixed(1)} IPS`;
-  if ($('diagLatency')) $('diagLatency').textContent = lastLatencyMs ? `${lastLatencyMs.toFixed(1)} ms` : '—';
-  if ($('diagPipeline')) $('diagPipeline').textContent = lastPipelineMs ? `${lastPipelineMs.toFixed(1)} ms` : '—';
-  if ($('diagProvider')) $('diagProvider').textContent = $('provider')?.textContent || profile.provider.toUpperCase();
-  if ($('diagModel')) $('diagModel').textContent = session ? `${modelLabel(currentModelKey)} · ${state.inputSize}×${state.inputSize}` : 'Sin cargar';
+
+  if ($('deviceProfile')) {
+    $('deviceProfile').textContent = parts.join(' · ');
+  }
+
+  if ($('diagPlatform')) {
+    $('diagPlatform').textContent = snapshot.platform;
+  }
+
+  if ($('diagCpu')) {
+    $('diagCpu').textContent = DEVICE.cores
+      ? `${DEVICE.cores} procesadores lógicos`
+      : 'No disponible';
+  }
+
+  if ($('diagRam')) {
+    $('diagRam').textContent = DEVICE.memoryGB
+      ? `~${DEVICE.memoryGB} GB`
+      : 'No disponible';
+  }
+
+  if ($('diagScreen')) {
+    $('diagScreen').textContent =
+      `${screen.width}×${screen.height} · DPR ` +
+      `${(window.devicePixelRatio || 1).toFixed(2)}`;
+  }
+
+  const jsMemory = performance.memory?.usedJSHeapSize;
+  if ($('diagJsMemory')) {
+    $('diagJsMemory').textContent =
+      Number.isFinite(jsMemory)
+        ? formatBytes(jsMemory)
+        : 'No disponible';
+  }
+
+  if ($('diagStorage')) {
+    $('diagStorage').textContent =
+      Number.isFinite(storage.usage) &&
+      Number.isFinite(storage.quota)
+        ? `${formatBytes(storage.usage)} / ${formatBytes(storage.quota)}`
+        : 'No disponible';
+  }
+
+  if ($('diagBattery')) {
+    $('diagBattery').textContent = battery
+      ? `${(battery.level * 100).toFixed(0)}% · ${
+          battery.charging ? 'Cargando' : 'Batería'
+        }`
+      : 'No disponible';
+  }
+
+  const drainRate = batteryDrainRatePerHour();
+  if ($('diagEnergyRate')) {
+    $('diagEnergyRate').textContent =
+      Number.isFinite(drainRate)
+        ? `${drainRate.toFixed(1)} % batería/h`
+        : battery?.charging
+          ? 'Cargando'
+          : 'No disponible';
+  }
+
+  const fpsAvg = average(performanceDiagnostics.fps);
+  const fpsMin = performanceDiagnostics.fps.length
+    ? Math.min(...performanceDiagnostics.fps)
+    : 0;
+  const ipsAvg = average(performanceDiagnostics.ips);
+  const latencyAvg = average(performanceDiagnostics.latency);
+
+  if ($('diagFps')) {
+    const fps = currentCameraFps || currentFps;
+    $('diagFps').textContent = `${fps.toFixed(1)} FPS`;
+  }
+
+  if ($('diagFpsStats')) {
+    $('diagFpsStats').textContent =
+      performanceDiagnostics.fps.length
+        ? `${fpsAvg.toFixed(1)} / ${fpsMin.toFixed(1)} FPS`
+        : '—';
+  }
+
+  if ($('diagIps')) {
+    $('diagIps').textContent = `${currentIps.toFixed(1)} IPS`;
+  }
+
+  if ($('diagIpsAvg')) {
+    $('diagIpsAvg').textContent =
+      performanceDiagnostics.ips.length
+        ? `${ipsAvg.toFixed(2)} IPS`
+        : '—';
+  }
+
+  if ($('diagLatency')) {
+    $('diagLatency').textContent =
+      lastLatencyMs
+        ? `${lastLatencyMs.toFixed(1)} ms`
+        : '—';
+  }
+
+  if ($('diagLatencyAvg')) {
+    $('diagLatencyAvg').textContent =
+      performanceDiagnostics.latency.length
+        ? `${latencyAvg.toFixed(1)} ms`
+        : '—';
+  }
+
+  if ($('diagLatencyPercentiles')) {
+    $('diagLatencyPercentiles').textContent =
+      performanceDiagnostics.latency.length
+        ? `${snapshot.latencyP50Ms.toFixed(0)} / ` +
+          `${snapshot.latencyP95Ms.toFixed(0)} / ` +
+          `${snapshot.latencyP99Ms.toFixed(0)} ms`
+        : '—';
+  }
+
+  if ($('diagPipeline')) {
+    $('diagPipeline').textContent =
+      lastPipelineMs
+        ? `${lastPipelineMs.toFixed(1)} ms`
+        : '—';
+  }
+
+  if ($('diagPrePost')) {
+    $('diagPrePost').textContent =
+      `${average(performanceDiagnostics.preprocess).toFixed(1)} / ` +
+      `${average(performanceDiagnostics.postprocess).toFixed(1)} ms`;
+  }
+
+  if ($('diagAiLoad')) {
+    $('diagAiLoad').textContent =
+      `${snapshot.aiDutyCyclePercent.toFixed(1)}%`;
+  }
+
+  if ($('diagProvider')) {
+    $('diagProvider').textContent = snapshot.backend;
+  }
+
+  if ($('diagModel')) {
+    $('diagModel').textContent = session
+      ? `${modelLabel(currentModelKey)} · ${state.inputSize}×${state.inputSize}`
+      : 'Sin cargar';
+  }
+
+  const camera = performanceDiagnostics.cameraSettings || {};
+  if ($('diagCamera')) {
+    const width = camera.width || video.videoWidth;
+    const height = camera.height || video.videoHeight;
+    const fps = camera.frameRate;
+
+    $('diagCamera').textContent =
+      width && height
+        ? `${width}×${height}${
+            fps
+              ? ` · ${Number(fps).toFixed(0)} FPS reportados`
+              : ''
+          }`
+        : '—';
+  }
+
+  const modelLoad = performanceDiagnostics.modelLoad;
+
+  if ($('diagModelLoad')) {
+    $('diagModelLoad').textContent =
+      modelLoad.totalMs
+        ? `${modelLoad.totalMs.toFixed(0)} ms · ` +
+          `desc ${modelLoad.downloadMs.toFixed(0)} · ` +
+          `init ${modelLoad.initMs.toFixed(0)}`
+        : '—';
+  }
+
+  if ($('diagLongTasks')) {
+    $('diagLongTasks').textContent =
+      performanceDiagnostics.longTaskSupported
+        ? `${performanceDiagnostics.longTasks} · máx ` +
+          `${performanceDiagnostics.longTaskMaxMs.toFixed(0)} ms`
+        : 'No disponible';
+  }
+
+  if ($('diagErrors')) {
+    $('diagErrors').textContent =
+      String(performanceDiagnostics.inferenceErrors);
+  }
+
+  if ($('diagUptime')) {
+    $('diagUptime').textContent =
+      formatDuration(
+        performance.now() -
+        performanceDiagnostics.appStartedAt
+      );
+  }
+
+  refreshResourceDiagnostics(false).catch(() => {});
 }
+
 
 async function startInstalledMonitoring() {
   saveFactoryConfig();
@@ -1695,12 +2972,16 @@ function evidenceMetadata(people, now, fileName) {
     model: modelLabel(currentModelKey),
     inputSize: state.inputSize,
     provider: $('provider')?.textContent || '',
-    fps: Number(currentFps.toFixed(1)),
+    fps: Number((currentCameraFps || currentFps).toFixed(1)),
     ips: Number(currentIps.toFixed(1)),
     latencyMs: Number(lastLatencyMs.toFixed(1)),
     people: people.map(person => ({
       id: person.id,
-      compliance: person.ok ? 'CUMPLE' : 'NO CUMPLE',
+      compliance: person.pending
+        ? 'VERIFICANDO'
+        : person.ok
+          ? 'CUMPLE'
+          : 'NO CUMPLE',
       missing: person.missing.map(id => metadata.classes[id]),
       detected: [...state.required]
         .filter(id => person.epp.has(id))
@@ -1737,7 +3018,7 @@ async function buildEvidenceBlob(people, now, fileName) {
     ectx.drawImage(roiCanvas, 0, 0, roiCanvas.width, roiCanvas.height, 0, 0, width, height);
   }
 
-  const nonCompliant = people.filter(person => !person.ok);
+  const nonCompliant = people.filter(person => !person.ok && !person.pending);
   const missing = [...new Set(
     nonCompliant.flatMap(person => person.missing.map(id => metadata.classes[id]))
   )];
@@ -1812,7 +3093,7 @@ async function uploadEvidence(blob, meta) {
 async function captureEvidence(people = lastPeople, { force = false } = {}) {
   if (evidenceBusy) return false;
 
-  const nonCompliant = people.filter(person => !person.ok);
+  const nonCompliant = people.filter(person => !person.ok && !person.pending);
   if (!nonCompliant.length) {
     $('evidenceStatus').textContent = 'No hay una persona en estado NO CUMPLE.';
     return false;
@@ -1946,16 +3227,24 @@ function updateReportStats(people) {
         firstSeen: now.toISOString(),
         lastSeen: now.toISOString(),
         samples: 0,
+        evaluatedSamples: 0,
         compliantSamples: 0,
-        nonCompliantSamples: 0
+        nonCompliantSamples: 0,
+        pendingSamples: 0
       };
       personStats.set(person.id, stat);
     }
 
     stat.lastSeen = now.toISOString();
     stat.samples += 1;
-    if (person.ok) stat.compliantSamples += 1;
-    else stat.nonCompliantSamples += 1;
+
+    if (person.pending) {
+      stat.pendingSamples += 1;
+    } else {
+      stat.evaluatedSamples += 1;
+      if (person.ok) stat.compliantSamples += 1;
+      else stat.nonCompliantSamples += 1;
+    }
 
     sessionLog.push({
       sampleId,
@@ -1964,15 +3253,31 @@ function updateReportStats(people) {
       sampleIntervalSec: intervalSec,
       source: $('sourceLabel').textContent,
       personId: person.id,
-      compliance: person.ok ? 'CUMPLE' : 'NO CUMPLE',
+      compliance: person.pending
+        ? 'VERIFICANDO'
+        : person.ok
+          ? 'CUMPLE'
+          : 'NO CUMPLE',
       detected: [...state.required]
         .filter(id => person.epp.has(id))
         .map(id => metadata.classes[id]),
       missing: person.missing.map(id => metadata.classes[id]),
-      fps: Number(currentFps.toFixed(1)),
+      fps: Number((currentCameraFps || currentFps).toFixed(1)),
       ips: Number(currentIps.toFixed(1)),
       latencyMs: Number(lastLatencyMs.toFixed(1)),
       pipelineMs: Number(lastPipelineMs.toFixed(1)),
+      preprocessMs: Number(lastPreprocessMs.toFixed(1)),
+      postprocessMs: Number(lastPostprocessMs.toFixed(1)),
+      batteryPct: performanceDiagnostics.battery
+        ? Number((performanceDiagnostics.battery.level * 100).toFixed(1))
+        : '',
+      jsHeapUsedMB: Number.isFinite(performance.memory?.usedJSHeapSize)
+        ? Number((performance.memory.usedJSHeapSize / 1048576).toFixed(1))
+        : '',
+      longTasks: performanceDiagnostics.longTaskSupported
+        ? performanceDiagnostics.longTasks
+        : '',
+      inferenceErrors: performanceDiagnostics.inferenceErrors,
       detections: lastBoxes.length,
       provider: $('provider')?.textContent || '',
       model: modelLabel(currentModelKey),
@@ -1992,10 +3297,22 @@ function updateReportStats(people) {
       compliance: 'SIN PERSONAS',
       detected: [],
       missing: [],
-      fps: Number(currentFps.toFixed(1)),
+      fps: Number((currentCameraFps || currentFps).toFixed(1)),
       ips: Number(currentIps.toFixed(1)),
       latencyMs: Number(lastLatencyMs.toFixed(1)),
       pipelineMs: Number(lastPipelineMs.toFixed(1)),
+      preprocessMs: Number(lastPreprocessMs.toFixed(1)),
+      postprocessMs: Number(lastPostprocessMs.toFixed(1)),
+      batteryPct: performanceDiagnostics.battery
+        ? Number((performanceDiagnostics.battery.level * 100).toFixed(1))
+        : '',
+      jsHeapUsedMB: Number.isFinite(performance.memory?.usedJSHeapSize)
+        ? Number((performance.memory.usedJSHeapSize / 1048576).toFixed(1))
+        : '',
+      longTasks: performanceDiagnostics.longTaskSupported
+        ? performanceDiagnostics.longTasks
+        : '',
+      inferenceErrors: performanceDiagnostics.inferenceErrors,
       detections: lastBoxes.length,
       provider: $('provider')?.textContent || '',
       model: modelLabel(currentModelKey),
@@ -2014,7 +3331,10 @@ function updateReportStats(people) {
   persistReportSession();
 
   // La fotografía corre fuera del ciclo de inferencia para no frenar la IA.
-  if (state.evidenceEnabled && people.some(person => !person.ok)) {
+  if (
+    state.evidenceEnabled &&
+    people.some(person => !person.ok && !person.pending)
+  ) {
     setTimeout(() => {
       captureEvidence(people, { force: false }).catch(console.error);
     }, 0);
@@ -2056,15 +3376,32 @@ function renderLoop() {
     return;
   }
 
-  // El overlay se redibuja de forma independiente de ONNX. Aunque una inferencia
-  // tarde cientos de milisegundos, la última caja estable nunca se borra.
+  const now = performance.now();
+  const renderPeriodMs = DEVICE.isIOS
+    ? 1000 / 15
+    : DEVICE.isAndroid
+      ? 1000 / 30
+      : 0;
+
+  if (
+    renderPeriodMs > 0 &&
+    now - lastRenderAt < renderPeriodMs
+  ) {
+    requestAnimationFrame(renderLoop);
+    return;
+  }
+
+  lastRenderAt = now;
+
+  // El overlay se redibuja de forma independiente de ONNX, pero en móviles
+  // se limita la frecuencia para evitar consumo innecesario de CPU/GPU.
   render(lastBoxes, lastPeople, false);
 
   fpsFrames++;
-  const now = performance.now();
   if (now - lastFpsAt > 1000) {
     currentFps = fpsFrames * 1000 / (now - lastFpsAt);
-    $('fpsLabel').textContent = `${currentFps.toFixed(1)} FPS`;
+    const fpsShown = currentCameraFps || currentFps;
+    $('fpsLabel').textContent = `${fpsShown.toFixed(1)} FPS`;
     const ipsNow = performance.now();
     inferenceTimestamps = inferenceTimestamps.filter(t => ipsNow - t <= 1000);
     currentIps = inferenceTimestamps.length;
@@ -2098,6 +3435,8 @@ async function inferenceLoop() {
     updateReportStats(lastPeople);
     markInferenceComplete();
   } catch (error) {
+    performanceDiagnostics.inferenceErrors += 1;
+    updateSystemDiagnostics(true);
     console.error(error);
     setStatus(`Error de inferencia: ${error.message}`);
     running = false;
@@ -2233,6 +3572,11 @@ function reportMeta() {
     performanceMode: state.performanceMode,
     reportSampleIntervalSec: Math.round(state.reportSampleIntervalMs / 1000),
     inferenceMinIntervalMs: state.inferenceMinIntervalMs,
+    personRecoverySec: state.personHoldMs / 1000,
+    eppConfirmSec: state.eppConfirmMs / 1000,
+    eppLatchSec: state.eppLatchHoldMs / 1000,
+    eppAbsenceSec: state.eppAbsenceConfirmMs / 1000,
+    device: currentPerformanceSnapshot(),
     evidenceEnabled: state.evidenceEnabled,
     evidenceCooldownSec: Math.round(state.evidenceCooldownMs / 1000),
     roi: state.roi
@@ -2242,14 +3586,19 @@ function reportMeta() {
 function reportSummary() {
   const currentPersons = lastPeople.length;
   const compliantNow = lastPeople.filter(p => p.ok).length;
-  const nonCompliantNow = currentPersons - compliantNow;
+  const pendingNow = lastPeople.filter(p => p.pending).length;
+  const nonCompliantNow = lastPeople.filter(
+    p => !p.ok && !p.pending
+  ).length;
+
   return {
     uniquePersons: personStats.size,
     currentPersons,
     compliantNow,
+    pendingNow,
     nonCompliantNow,
     records: sessionLog.length,
-    fps: Number(currentFps.toFixed(1)),
+    fps: Number((currentCameraFps || currentFps).toFixed(1)),
     ips: Number(currentIps.toFixed(1)),
     latencyMs: Number(lastLatencyMs.toFixed(1)),
     pipelineMs: Number(lastPipelineMs.toFixed(1)),
@@ -2263,10 +3612,25 @@ function reportPayload() {
     summary: reportSummary(),
     persons: [...personStats.values()].map(stat => ({
       ...stat,
-      complianceRate: stat.samples ? Number((100 * stat.compliantSamples / stat.samples).toFixed(1)) : 0
+      complianceRate: stat.evaluatedSamples
+        ? Number(
+            (
+              100 *
+              stat.compliantSamples /
+              stat.evaluatedSamples
+            ).toFixed(1)
+          )
+        : 0
     })),
     records: sessionLog,
-    evidence: evidenceEvents
+    evidence: evidenceEvents,
+    performance: currentPerformanceSnapshot(),
+    benchmark: benchmarkState.samples.length
+      ? {
+          summary: benchmarkSummary(),
+          samples: benchmarkState.samples
+        }
+      : null
   };
 }
 
@@ -2292,7 +3656,8 @@ function downloadCsv() {
   const header = [
     'sampleId','timestamp','localTime','sampleIntervalSec',
     'source','personId','compliance','detected','missing',
-    'fps','ips','latencyMs','pipelineMs','detections',
+    'fps','ips','latencyMs','pipelineMs','preprocessMs','postprocessMs',
+    'batteryPct','jsHeapUsedMB','longTasks','inferenceErrors','detections',
     'provider','model','inputSize'
   ];
   const lines = [header.join(',')];
@@ -2321,6 +3686,7 @@ function printReport() {
     <div class="summary-box">
       <div><b>Personas únicas</b><br>${payload.summary.uniquePersons}</div>
       <div><b>Cumplen ahora</b><br>${payload.summary.compliantNow}</div>
+      <div><b>Verificando</b><br>${payload.summary.pendingNow}</div>
       <div><b>No cumplen ahora</b><br>${payload.summary.nonCompliantNow}</div>
       <div><b>Registros</b><br>${payload.summary.records}</div>
     </div>
@@ -2339,6 +3705,8 @@ function printReport() {
 function clearReport() {
   sessionLog.length = 0;
   personStats.clear();
+  personEvidence.clear();
+  nextTrackId = 1;
   reportStartedAt = new Date();
   lastReportSampleAt = 0;
   sampleSequence = 0;
@@ -2563,6 +3931,69 @@ $('performanceMode').onchange = event => {
     : 'Modo rendimiento manual activo.');
 };
 
+
+function applyTemporalSettingFromUi() {
+  state.personHoldMs = Math.max(
+    3000,
+    Math.min(
+      30000,
+      Number($('personRecoverySec')?.value || 10) * 1000
+    )
+  );
+
+  state.eppConfirmMs = Math.max(
+    500,
+    Math.min(
+      10000,
+      Number($('eppConfirmSec')?.value || 2) * 1000
+    )
+  );
+
+  state.eppLatchHoldMs = Math.max(
+    3000,
+    Math.min(
+      30000,
+      Number($('eppLatchSec')?.value || 10) * 1000
+    )
+  );
+
+  state.eppAbsenceConfirmMs = Math.max(
+    1000,
+    Math.min(
+      15000,
+      Number($('eppAbsenceSec')?.value || 5) * 1000
+    )
+  );
+
+  personEvidence.clear();
+
+  setStatus(
+    `Estabilidad: ID ${state.personHoldMs / 1000}s · ` +
+    `confirmar EPP ${state.eppConfirmMs / 1000}s · ` +
+    `persistencia ${state.eppLatchHoldMs / 1000}s · ` +
+    `ausencia ${state.eppAbsenceConfirmMs / 1000}s.`
+  );
+}
+
+for (
+  const id of [
+    'personRecoverySec',
+    'eppConfirmSec',
+    'eppLatchSec',
+    'eppAbsenceSec'
+  ]
+) {
+  $(id)?.addEventListener('change', () => {
+    applyTemporalSettingFromUi();
+    saveFactoryConfig();
+  });
+}
+
+$('startBenchmarkBtn').onclick = startBenchmark;
+$('stopBenchmarkBtn').onclick = () => stopBenchmark(false);
+$('downloadBenchmarkCsvBtn').onclick = downloadBenchmarkCsv;
+$('downloadBenchmarkJsonBtn').onclick = downloadBenchmarkJson;
+
 $('downloadCsvBtn').onclick = downloadCsv;
 $('downloadJsonBtn').onclick = downloadJson;
 $('printReportBtn').onclick = printReport;
@@ -2755,6 +4186,26 @@ function applyDeviceProfile() {
   updateSystemDiagnostics();
 }
 
+if ($('personRecoverySec')) {
+  $('personRecoverySec').value =
+    String(state.personHoldMs / 1000);
+}
+if ($('eppConfirmSec')) {
+  $('eppConfirmSec').value =
+    String(state.eppConfirmMs / 1000);
+}
+if ($('eppLatchSec')) {
+  $('eppLatchSec').value =
+    String(state.eppLatchHoldMs / 1000);
+}
+if ($('eppAbsenceSec')) {
+  $('eppAbsenceSec').value =
+    String(state.eppAbsenceConfirmMs / 1000);
+}
+
+refreshResourceDiagnostics(true).catch(() => {});
+
+restoreInterruptedBenchmark();
 restoreReportSession();
 applyDeviceProfile();
 updateAcquisitionClock();
@@ -2778,6 +4229,7 @@ loadMetadata()
   .catch(error => setStatus(error.message));
 
 window.addEventListener('beforeunload', () => {
+  if (benchmarkState.active) persistBenchmarkRecovery();
   saveFactoryConfig();
   if (session && typeof session.release === 'function') {
     try {
