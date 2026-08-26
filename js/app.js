@@ -3852,9 +3852,72 @@ $('loadDefaultBtn').onclick = () => loadDefault().catch(error => {
   setStatus(`No se pudo cargar el modelo predeterminado: ${error.message}`);
 });
 
-$('modelInput').onchange = event => {
+$('modelInput').onchange = async event => {
   const file = event.target.files[0];
-  if (file) createSession(file.arrayBuffer(), Number($('resolutionSelect').value || 640)).catch(error => setStatus(error.message));
+  if (!file) return;
+
+  try {
+    setStatus(`Leyendo modelo ${file.name}...`);
+
+    const buffer = await file.arrayBuffer();
+
+    // Detectar automáticamente la resolución desde el nombre.
+    const match = file.name.match(
+      /(?:_|-)(320|416|480|512|640)(?:\.|_|-)/i
+    );
+
+    const inputSize = match
+      ? Number(match[1])
+      : Number($('resolutionSelect')?.value || 640);
+
+    state.inputSize = inputSize;
+    currentProfile = inputSize;
+
+    // Actualizar selector de resolución.
+    if ($('resolutionSelect')) {
+      const exists = [...$('resolutionSelect').options]
+        .some(option => Number(option.value) === inputSize);
+
+      if (exists) {
+        $('resolutionSelect').value = String(inputSize);
+      }
+    }
+
+    setStatus(
+      `Cargando modelo personalizado · ${inputSize}×${inputSize}...`
+    );
+
+    await createSession(
+      buffer,
+      inputSize,
+      currentModelKey
+    );
+
+    if ($('activeModel')) {
+      $('activeModel').textContent =
+        `${file.name} · ${inputSize}×${inputSize}`;
+    }
+
+    if ($('diagModel')) {
+      $('diagModel').textContent =
+        `${file.name} · ${inputSize}×${inputSize}`;
+    }
+
+    setStatus(
+      `Modelo importado correctamente: <b>${file.name}</b> · ` +
+      `${inputSize}×${inputSize}`
+    );
+
+  } catch (error) {
+    console.error('Error importando ONNX:', error);
+
+    setStatus(
+      `Error al importar ONNX: ${error?.message || error}`
+    );
+
+  } finally {
+    event.target.value = '';
+  }
 };
 
 $('metadataInput').onchange = async event => {
