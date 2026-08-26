@@ -928,13 +928,36 @@ async function createSession(
         }
       );
       performanceDiagnostics.modelLoad.downloadMs = performance.now() - downloadStartedAt;
-    } else if (model instanceof Uint8Array) {
-      modelBytes = model;
-    } else if (model instanceof ArrayBuffer) {
-      modelBytes = new Uint8Array(model);
-    } else {
-      throw new Error('Formato de modelo no válido.');
-    }
+} else if (model instanceof Uint8Array) {
+  modelBytes = model;
+
+} else if (model instanceof ArrayBuffer) {
+  modelBytes = new Uint8Array(model);
+
+} else if (ArrayBuffer.isView(model)) {
+  modelBytes = new Uint8Array(
+    model.buffer,
+    model.byteOffset,
+    model.byteLength
+  );
+
+} else if (model?.buffer instanceof ArrayBuffer) {
+  modelBytes = new Uint8Array(model.buffer);
+
+} else {
+  console.error(
+    'MODELO RECIBIDO:',
+    model,
+    'TIPO:',
+    Object.prototype.toString.call(model),
+    'CONSTRUCTOR:',
+    model?.constructor?.name
+  );
+
+  throw new Error(
+    `Formato de modelo no válido (${model?.constructor?.name || typeof model})`
+  );
+}
 
     if (session) {
       setStatus(`Liberando modelo anterior antes de cargar ${modelDescription}...`);
@@ -3853,15 +3876,19 @@ $('loadDefaultBtn').onclick = () => loadDefault().catch(error => {
 });
 
 $('modelInput').onchange = async event => {
-  const file = event.target.files[0];
+  const file = event.target.files?.[0];
   if (!file) return;
 
   try {
     setStatus(`Leyendo modelo ${file.name}...`);
 
-    const buffer = await file.arrayBuffer();
+    // Leer el archivo correctamente
+    const arrayBuffer = await file.arrayBuffer();
 
-    // Detectar automáticamente la resolución desde el nombre.
+    // Convertir explícitamente a Uint8Array
+    const modelBytes = new Uint8Array(arrayBuffer);
+
+    // Detectar resolución desde el nombre del archivo
     const match = file.name.match(
       /(?:_|-)(320|416|480|512|640)(?:\.|_|-)/i
     );
@@ -3873,7 +3900,6 @@ $('modelInput').onchange = async event => {
     state.inputSize = inputSize;
     currentProfile = inputSize;
 
-    // Actualizar selector de resolución.
     if ($('resolutionSelect')) {
       const exists = [...$('resolutionSelect').options]
         .some(option => Number(option.value) === inputSize);
@@ -3884,11 +3910,11 @@ $('modelInput').onchange = async event => {
     }
 
     setStatus(
-      `Cargando modelo personalizado · ${inputSize}×${inputSize}...`
+      `Inicializando ${file.name} · ${inputSize}×${inputSize}...`
     );
 
     await createSession(
-      buffer,
+      modelBytes,
       inputSize,
       currentModelKey
     );
@@ -3904,17 +3930,16 @@ $('modelInput').onchange = async event => {
     }
 
     setStatus(
-      `Modelo importado correctamente: <b>${file.name}</b> · ` +
+      `Modelo cargado correctamente: <b>${file.name}</b> · ` +
       `${inputSize}×${inputSize}`
     );
 
   } catch (error) {
-    console.error('Error importando ONNX:', error);
+    console.error(error);
 
     setStatus(
       `Error al importar ONNX: ${error?.message || error}`
     );
-
   } finally {
     event.target.value = '';
   }
