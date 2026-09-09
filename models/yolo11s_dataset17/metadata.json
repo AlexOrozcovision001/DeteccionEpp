@@ -1,0 +1,13 @@
+{
+  "name": "YOLO11s · Dataset 17",
+  "modelKey": "yolo11s_dataset17",
+  "task": "detect",
+  "dataset": "17_PPE_ECUADOR_BALANCED_V1",
+  "inputSize": 640,
+  "personClass": 0,
+  "classes": ["Person", "Hardhat", "Safety Vest", "Safety Glasses", "Gloves", "Safety Boots", "Regular Glasses", "Regular Shoes"],
+  "requiredDefaults": [1, 2, 3, 4, 5],
+  "outputShape": [1, 12, 8400],
+  "integratedNms": false,
+  "testMetrics": {"precision": 0.81289, "recall": 0.78316, "f1": 0.79775, "map50": 0.82082, "map50_95": 0.52864}
+}

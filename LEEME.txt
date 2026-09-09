@@ -1,0 +1,8 @@
+EPP GUARD · VERSIÓN DATASET 17
+
+1. Ejecute scripts/export_final_models.py en el servidor de entrenamiento.
+2. Confirme que existan los tres models/*/model_640.onnx.
+3. Pruebe la aplicación con python3 -m http.server 8000.
+4. Cargue YOLO11n, YOLO11s y YOLO11m individualmente.
+5. Use Benchmark para medir celular, tableta y laptop.
+6. Consulte README.md y docs/tesis/RESULTADOS_PARA_TESIS.md.

@@ -1,4 +1,6 @@
 ultralytics
 onnx
-onnxsim
+onnxruntime
+onnxslim
 opencv-python
+matplotlib

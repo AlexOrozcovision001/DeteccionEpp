@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>EPP Guard · Monitoreo inteligente</title>
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="css/styles.css?v=13">
+  <link rel="stylesheet" href="css/styles.css?v=14">
   <script>
     window.__EPP_BOOT__ = (() => {
       const ua = navigator.userAgent;
@@ -23,9 +23,10 @@
     // que conserva fallback WASM cuando navigator.gpu no está disponible.
     window.__ORT_READY__ = new Promise((resolve, reject) => {
       const script = document.createElement('script');
+      const ortVersion = '1.27.0';
       script.src = window.__EPP_BOOT__.isIOS
-        ? 'https://cdn.jsdelivr.net/npm/onnxruntime-web@dev/dist/ort.min.js'
-        : 'https://cdn.jsdelivr.net/npm/onnxruntime-web@dev/dist/ort.webgpu.min.js';
+        ? `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ortVersion}/dist/ort.min.js`
+        : `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ortVersion}/dist/ort.webgpu.min.js`;
       script.onload = resolve;
       script.onerror = () => reject(new Error('No se pudo cargar ONNX Runtime Web.'));
       document.head.appendChild(script);
@@ -151,14 +152,15 @@
 
       <section class="card">
         <h3>4 · Modelo y detección</h3>
-        <div class="field"><label>Modelo</label><select id="modelSelect">
-          <option value="yolo11s_previous">YOLO11s · Modelo anterior</option>
-          <option value="yolo11s_dataset15" selected>YOLO11s · Dataset 15</option>
-          <option value="yolo11m_dataset15">YOLO11m · Dataset 15</option>
+        <div class="field"><label>Modelo final · Dataset 17</label><select id="modelSelect">
+          <option value="yolo11n_dataset17">YOLO11n · Ligero</option>
+          <option value="yolo11s_dataset17" selected>YOLO11s · Equilibrado (recomendado)</option>
+          <option value="yolo11m_dataset17">YOLO11m · Mayor exactitud</option>
         </select></div>
         <div class="field"><label>Resolución IA</label><select id="resolutionSelect">
-          <option value="640">640 × 640 · Precisión</option><option value="512">512 × 512 · Equilibrado</option><option value="480" selected>480 × 480 · Rápido</option>
+          <option value="640" selected>640 × 640 · Resolución validada</option>
         </select></div>
+        <p class="hint">Los tres modelos fueron entrenados y evaluados con el mismo Dataset 17 y la misma resolución. Se carga únicamente el modelo seleccionado.</p>
         <div class="row-actions"><button id="loadDefaultBtn" class="primary">Cargar modelo</button><label class="button">ONNX<input id="modelInput" type="file" accept=".onnx" hidden></label><label class="button">Metadatos<input id="metadataInput" type="file" accept=".json" hidden></label></div>
       </section>
 
@@ -167,7 +169,7 @@
         <div class="configuration-grid">
           <div class="field"><label>Confianza <output id="confOut">0.35</output></label><input id="confRange" type="range" min="0.10" max="0.90" step="0.05" value="0.35"></div>
           <div class="field"><label>IoU NMS <output id="iouOut">0.45</output></label><input id="iouRange" type="range" min="0.10" max="0.90" step="0.05" value="0.45"></div>
-          <div class="field"><label>Rendimiento</label><select id="performanceMode"><option value="manual" selected>Manual / estable</option><option value="auto">Automático</option></select></div>
+          <div class="field"><label>Rendimiento</label><select id="performanceMode"><option value="manual" selected>Manual / comparación controlada</option></select></div>
           <div class="field"><label>Ritmo de IA</label><select id="frameSkip"><option value="0">Máxima velocidad</option><option value="200">5 IPS objetivo</option><option value="250">4 IPS objetivo</option><option value="333">3 IPS objetivo</option><option value="500">2 IPS objetivo</option><option value="700">Modo móvil compatible</option><option value="1500">Modo iPhone seguro</option></select></div>
         </div>
         <div class="temporal-settings">
@@ -226,7 +228,7 @@
         <div class="benchmark-box">
           <div>
             <b>Prueba comparativa fija</b>
-            <p class="hint">Durante la prueba se bloquean modelo, resolución y modo automático para comparar dispositivos con la misma configuración.</p>
+            <p class="hint">Durante la prueba se bloquean modelo y resolución para comparar celulares, tabletas y laptops con la misma configuración.</p>
           </div>
           <div class="benchmark-controls">
             <select id="benchmarkDuration">
@@ -287,6 +289,6 @@
 </main>
 
 <section id="printableReport" class="print-report" aria-hidden="true"></section>
-<script type="module" src="js/app.js?v=13"></script>
+<script type="module" src="js/app.js?v=14"></script>
 </body>
 </html>

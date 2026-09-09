@@ -1,0 +1,328 @@
+{
+  "status": "completed",
+  "started_at": "2026-08-31T00:13:28",
+  "finished_at": "2026-08-31T00:14:21",
+  "total_seconds": 53.271,
+  "dataset": "/home/aorozcogalan/MROB/PPE_YOLO11/datasets/processed/17_PPE_ECUADOR_BALANCED_V1/data.yaml",
+  "split": "test",
+  "image_size": 640,
+  "batch": 16,
+  "device": 0,
+  "gpu": "Tesla V100-PCIE-16GB",
+  "evaluation_configuration": {
+    "confidence": 0.001,
+    "iou": 0.7,
+    "maximum_detections": 300,
+    "half": false
+  },
+  "ranking_by_map50_95": [
+    "YOLO11m",
+    "YOLO11s",
+    "YOLO11n"
+  ],
+  "models": [
+    {
+      "model": "YOLO11n",
+      "weights": "/home/aorozcogalan/MROB/PPE_YOLO11/experiments/training/yolo11n_ppe_dataset17_v1/weights/best.pt",
+      "weights_size_mb": 5.211,
+      "precision": 0.8123356780942801,
+      "recall": 0.742383489256382,
+      "f1_from_mean_precision_recall": 0.7757858883012811,
+      "map50": 0.8011231271044874,
+      "map50_95": 0.5073517063685531,
+      "evaluation_seconds": 18.09,
+      "maximum_pytorch_memory_gib": 0.445,
+      "speed_ms_per_image": {
+        "preprocess": 0.6162852409082745,
+        "inference": 2.301031988920151,
+        "loss": 0.005191889478754035,
+        "postprocess": 1.3656728990760219
+      },
+      "theoretical_fps_from_inference": 434.588,
+      "output": "/home/aorozcogalan/MROB/PPE_YOLO11/experiments/evaluation/dataset17_models_comparison_v1/yolo11n"
+    },
+    {
+      "model": "YOLO11s",
+      "weights": "/home/aorozcogalan/MROB/PPE_YOLO11/experiments/training/yolo11s_ppe_dataset17_v1/weights/best.pt",
+      "weights_size_mb": 18.281,
+      "precision": 0.8128906416177826,
+      "recall": 0.7831595452640023,
+      "f1_from_mean_precision_recall": 0.7977481791879251,
+      "map50": 0.8208176422855904,
+      "map50_95": 0.5286359980152874,
+      "evaluation_seconds": 15.358,
+      "maximum_pytorch_memory_gib": 0.793,
+      "speed_ms_per_image": {
+        "preprocess": 0.5687607749837197,
+        "inference": 3.043788811505142,
+        "loss": 0.0005843065628957321,
+        "postprocess": 1.3292668198314683
+      },
+      "theoretical_fps_from_inference": 328.538,
+      "output": "/home/aorozcogalan/MROB/PPE_YOLO11/experiments/evaluation/dataset17_models_comparison_v1/yolo11s"
+    },
+    {
+      "model": "YOLO11m",
+      "weights": "/home/aorozcogalan/MROB/PPE_YOLO11/experiments/training/yolo11m_ppe_dataset17_v1/weights/best.pt",
+      "weights_size_mb": 38.633,
+      "precision": 0.8279389804094257,
+      "recall": 0.7692274435997924,
+      "f1_from_mean_precision_recall": 0.7975040994892407,
+      "map50": 0.8225731745047323,
+      "map50_95": 0.5330600299953399,
+      "evaluation_seconds": 18.408,
+      "maximum_pytorch_memory_gib": 1.479,
+      "speed_ms_per_image": {
+        "preprocess": 0.5670264267233188,
+        "inference": 7.193862623221872,
+        "loss": 0.004714498747424159,
+        "postprocess": 1.1001280019260242
+      },
+      "theoretical_fps_from_inference": 139.007,
+      "output": "/home/aorozcogalan/MROB/PPE_YOLO11/experiments/evaluation/dataset17_models_comparison_v1/yolo11m"
+    }
+  ],
+  "class_metrics": [
+    {
+      "model": "YOLO11n",
+      "class_id": 0,
+      "class_name": "Person",
+      "precision": 0.8468698664115643,
+      "recall": 0.8303208720107852,
+      "f1": 0.8385137239905678,
+      "map50": 0.8985672666695648,
+      "map50_95": 0.6858018727130181
+    },
+    {
+      "model": "YOLO11n",
+      "class_id": 1,
+      "class_name": "Hardhat",
+      "precision": 0.7525051412622964,
+      "recall": 0.6907128000486333,
+      "f1": 0.7202861304511651,
+      "map50": 0.7380365638049353,
+      "map50_95": 0.4245981751176469
+    },
+    {
+      "model": "YOLO11n",
+      "class_id": 2,
+      "class_name": "Safety Vest",
+      "precision": 0.8237184004023466,
+      "recall": 0.7760617760617761,
+      "f1": 0.7991802551321918,
+      "map50": 0.8276361832623944,
+      "map50_95": 0.5636131127775644
+    },
+    {
+      "model": "YOLO11n",
+      "class_id": 3,
+      "class_name": "Safety Glasses",
+      "precision": 0.8917577303398414,
+      "recall": 0.8480865542458056,
+      "f1": 0.869374055421391,
+      "map50": 0.9063255386236908,
+      "map50_95": 0.48450623356374656
+    },
+    {
+      "model": "YOLO11n",
+      "class_id": 4,
+      "class_name": "Gloves",
+      "precision": 0.7866744876778534,
+      "recall": 0.5134615384615384,
+      "f1": 0.6213612800361042,
+      "map50": 0.6168015237734665,
+      "map50_95": 0.3279751740363949
+    },
+    {
+      "model": "YOLO11n",
+      "class_id": 5,
+      "class_name": "Safety Boots",
+      "precision": 0.7479995034351388,
+      "recall": 0.6490963855421686,
+      "f1": 0.6950471730648284,
+      "map50": 0.7132087668639812,
+      "map50_95": 0.40058999585294136
+    },
+    {
+      "model": "YOLO11n",
+      "class_id": 6,
+      "class_name": "Regular Glasses",
+      "precision": 0.8523148224087209,
+      "recall": 0.8842105263157894,
+      "f1": 0.8679697515067164,
+      "map50": 0.9134250880365327,
+      "map50_95": 0.6151132586610424
+    },
+    {
+      "model": "YOLO11n",
+      "class_id": 7,
+      "class_name": "Regular Shoes",
+      "precision": 0.7968454728164787,
+      "recall": 0.7471174613645596,
+      "f1": 0.7711806463362716,
+      "map50": 0.7949840858013342,
+      "map50_95": 0.5566158282260691
+    },
+    {
+      "model": "YOLO11s",
+      "class_id": 0,
+      "class_name": "Person",
+      "precision": 0.8449059505481875,
+      "recall": 0.8477961432506887,
+      "f1": 0.8463485794794804,
+      "map50": 0.9053056114222663,
+      "map50_95": 0.6976463761458456
+    },
+    {
+      "model": "YOLO11s",
+      "class_id": 1,
+      "class_name": "Hardhat",
+      "precision": 0.7370675907931329,
+      "recall": 0.7554446668186744,
+      "f1": 0.7461429917373381,
+      "map50": 0.7503895663259915,
+      "map50_95": 0.415165740711569
+    },
+    {
+      "model": "YOLO11s",
+      "class_id": 2,
+      "class_name": "Safety Vest",
+      "precision": 0.8344082269221905,
+      "recall": 0.8011583011583011,
+      "f1": 0.8174452901503664,
+      "map50": 0.8458696055097616,
+      "map50_95": 0.5769024678927877
+    },
+    {
+      "model": "YOLO11s",
+      "class_id": 3,
+      "class_name": "Safety Glasses",
+      "precision": 0.8896696369230662,
+      "recall": 0.8775210120874669,
+      "f1": 0.8835535663945956,
+      "map50": 0.9033566176966069,
+      "map50_95": 0.5011013926797113
+    },
+    {
+      "model": "YOLO11s",
+      "class_id": 4,
+      "class_name": "Gloves",
+      "precision": 0.7701223520701592,
+      "recall": 0.5733900582853679,
+      "f1": 0.6573523205841023,
+      "map50": 0.6447488558436301,
+      "map50_95": 0.36141024241014186
+    },
+    {
+      "model": "YOLO11s",
+      "class_id": 5,
+      "class_name": "Safety Boots",
+      "precision": 0.7455647202567943,
+      "recall": 0.7108433734939759,
+      "f1": 0.7277901615343887,
+      "map50": 0.745599111959323,
+      "map50_95": 0.42291921825839773
+    },
+    {
+      "model": "YOLO11s",
+      "class_id": 6,
+      "class_name": "Regular Glasses",
+      "precision": 0.8654834541542478,
+      "recall": 0.9157894736842105,
+      "f1": 0.8899261023678356,
+      "map50": 0.937506618495461,
+      "map50_95": 0.6555899290801923
+    },
+    {
+      "model": "YOLO11s",
+      "class_id": 7,
+      "class_name": "Regular Shoes",
+      "precision": 0.8159032012744828,
+      "recall": 0.7833333333333333,
+      "f1": 0.7992866102054277,
+      "map50": 0.8337651510316827,
+      "map50_95": 0.5983526169436535
+    },
+    {
+      "model": "YOLO11m",
+      "class_id": 0,
+      "class_name": "Person",
+      "precision": 0.854795212545069,
+      "recall": 0.8202479338842975,
+      "f1": 0.837165309417715,
+      "map50": 0.9007722981943338,
+      "map50_95": 0.6948334187896529
+    },
+    {
+      "model": "YOLO11m",
+      "class_id": 1,
+      "class_name": "Hardhat",
+      "precision": 0.789166104765816,
+      "recall": 0.7639198218262806,
+      "f1": 0.7763377670505122,
+      "map50": 0.7761416620933022,
+      "map50_95": 0.43679695947376523
+    },
+    {
+      "model": "YOLO11m",
+      "class_id": 2,
+      "class_name": "Safety Vest",
+      "precision": 0.8399250884591352,
+      "recall": 0.7901009014662964,
+      "f1": 0.8142515194939686,
+      "map50": 0.8603231495762278,
+      "map50_95": 0.5897667770266548
+    },
+    {
+      "model": "YOLO11m",
+      "class_id": 3,
+      "class_name": "Safety Glasses",
+      "precision": 0.8852829413507592,
+      "recall": 0.8676470588235294,
+      "f1": 0.8763762845216388,
+      "map50": 0.8911082812851494,
+      "map50_95": 0.48312413996450393
+    },
+    {
+      "model": "YOLO11m",
+      "class_id": 4,
+      "class_name": "Gloves",
+      "precision": 0.7928486907810324,
+      "recall": 0.5615384615384615,
+      "f1": 0.6574413132781107,
+      "map50": 0.6538721681363808,
+      "map50_95": 0.3758226527905163
+    },
+    {
+      "model": "YOLO11m",
+      "class_id": 5,
+      "class_name": "Safety Boots",
+      "precision": 0.7647094175670713,
+      "recall": 0.6596385542168675,
+      "f1": 0.7082985683171017,
+      "map50": 0.7293008366512725,
+      "map50_95": 0.40645039310276465
+    },
+    {
+      "model": "YOLO11m",
+      "class_id": 6,
+      "class_name": "Regular Glasses",
+      "precision": 0.8836734449891951,
+      "recall": 0.9192982456140351,
+      "f1": 0.9011338912398364,
+      "map50": 0.9419767109191296,
+      "map50_95": 0.6603413140116339
+    },
+    {
+      "model": "YOLO11m",
+      "class_id": 7,
+      "class_name": "Regular Shoes",
+      "precision": 0.813110942817327,
+      "recall": 0.7714285714285715,
+      "f1": 0.791721515798271,
+      "map50": 0.8270902891820628,
+      "map50_95": 0.6173445848032276
+    }
+  ],
+  "dataset_modified": false
+}

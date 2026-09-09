@@ -12,6 +12,13 @@ const DEVICE = {
   cores: Number(navigator.hardwareConcurrency || 0)
 };
 
+const APP_VERSION = '14.0.0';
+const ORT_VERSION = '1.27.0';
+const DEFAULT_MODEL_KEY = 'yolo11s_dataset17';
+const VALIDATED_INPUT_SIZE = 640;
+const MAX_NMS_CANDIDATES = 1200;
+const MAX_DETECTIONS = 300;
+
 DEVICE.lowMemory = DEVICE.isMobile && DEVICE.memoryGB > 0 && DEVICE.memoryGB <= 4;
 DEVICE.lowCpu = DEVICE.isMobile && DEVICE.cores > 0 && DEVICE.cores <= 4;
 
@@ -27,7 +34,7 @@ function devicePerformanceProfile() {
   if (DEVICE.isIOS) {
     return {
       name: 'iPhone / iPad · modo seguro',
-      provider: 'wasm', modelKey: 'yolo11s_dataset15', inputSize: 480,
+      provider: 'wasm', modelKey: DEFAULT_MODEL_KEY, inputSize: VALIDATED_INPUT_SIZE,
       inferenceMs: 1500, cameraWidth: 640, cameraHeight: 480, cameraFps: 12,
       allowHeavyModel: false
     };
@@ -37,14 +44,14 @@ function devicePerformanceProfile() {
     if (provider === 'webgpu' && !DEVICE.lowMemory && !DEVICE.lowCpu) {
       return {
         name: 'Android · WebGPU',
-        provider: 'webgpu', modelKey: 'yolo11s_dataset15', inputSize: 480,
+        provider: 'webgpu', modelKey: DEFAULT_MODEL_KEY, inputSize: VALIDATED_INPUT_SIZE,
         inferenceMs: 200, cameraWidth: 960, cameraHeight: 540, cameraFps: 30,
         allowHeavyModel: false
       };
     }
     return {
       name: 'Android · modo compatible',
-      provider: 'wasm', modelKey: 'yolo11s_dataset15', inputSize: 480,
+      provider: 'wasm', modelKey: DEFAULT_MODEL_KEY, inputSize: VALIDATED_INPUT_SIZE,
       inferenceMs: 700, cameraWidth: 640, cameraHeight: 480, cameraFps: 20,
       allowHeavyModel: false
     };
@@ -53,7 +60,7 @@ function devicePerformanceProfile() {
   if (provider === 'webgpu') {
     return {
       name: 'Escritorio · WebGPU',
-      provider: 'webgpu', modelKey: 'yolo11s_dataset15', inputSize: 480,
+      provider: 'webgpu', modelKey: DEFAULT_MODEL_KEY, inputSize: VALIDATED_INPUT_SIZE,
       inferenceMs: 0, cameraWidth: 1280, cameraHeight: 720, cameraFps: 30,
       allowHeavyModel: true
     };
@@ -61,7 +68,7 @@ function devicePerformanceProfile() {
 
   return {
     name: 'Escritorio · WASM',
-    provider: 'wasm', modelKey: 'yolo11s_dataset15', inputSize: 480,
+    provider: 'wasm', modelKey: DEFAULT_MODEL_KEY, inputSize: VALIDATED_INPUT_SIZE,
     inferenceMs: 400, cameraWidth: 640, cameraHeight: 480, cameraFps: 24,
     allowHeavyModel: false
   };
@@ -110,8 +117,8 @@ let inferenceBusy = false;
 let renderLoopActive = false;
 let inferenceLoopActive = false;
 let profileSwitching = false;
-let currentProfile = 640;
-let currentModelKey = 'yolo11s_dataset15';
+let currentProfile = VALIDATED_INPUT_SIZE;
+let currentModelKey = DEFAULT_MODEL_KEY;
 let lastProfileSwitchAt = 0;
 let latencyHistory = [];
 let inferenceTimestamps = [];
@@ -183,42 +190,40 @@ let inferenceWorkspace = {
 };
 
 const MODEL_CATALOG = {
-  yolo11s_previous: {
-    label: 'YOLO11s · Modelo anterior',
-    profiles: {
-      640: 'models/yolo11s_previous/model_640.onnx',
-      512: 'models/yolo11s_previous/model_512.onnx',
-      480: 'models/yolo11s_previous/model_480.onnx'
-    }
+  yolo11n_dataset17: {
+    label: 'YOLO11n · Dataset 17 · Ligero',
+    inputSize: VALIDATED_INPUT_SIZE,
+    model: 'models/yolo11n_dataset17/model_640.onnx',
+    metadata: 'models/yolo11n_dataset17/metadata.json',
+    test: { precision: 0.81234, recall: 0.74238, f1: 0.77579, map50: 0.80112, map50_95: 0.50735 }
   },
-  yolo11s_dataset15: {
-    label: 'YOLO11s · Dataset 15',
-    profiles: {
-      640: 'models/yolo11s_dataset15/model_640.onnx',
-      512: 'models/yolo11s_dataset15/model_512.onnx',
-      480: 'models/yolo11s_dataset15/model_480.onnx'
-    }
+  yolo11s_dataset17: {
+    label: 'YOLO11s · Dataset 17 · Equilibrado',
+    inputSize: VALIDATED_INPUT_SIZE,
+    model: 'models/yolo11s_dataset17/model_640.onnx',
+    metadata: 'models/yolo11s_dataset17/metadata.json',
+    test: { precision: 0.81289, recall: 0.78316, f1: 0.79775, map50: 0.82082, map50_95: 0.52864 }
   },
-  yolo11m_dataset15: {
-    label: 'YOLO11m · Dataset 15',
-    profiles: {
-      640: 'models/yolo11m_dataset15/model_640.onnx',
-      512: 'models/yolo11m_dataset15/model_512.onnx',
-      480: 'models/yolo11m_dataset15/model_480.onnx'
-    }
+  yolo11m_dataset17: {
+    label: 'YOLO11m · Dataset 17 · Mayor exactitud',
+    inputSize: VALIDATED_INPUT_SIZE,
+    model: 'models/yolo11m_dataset17/model_640.onnx',
+    metadata: 'models/yolo11m_dataset17/metadata.json',
+    test: { precision: 0.82794, recall: 0.76923, f1: 0.79750, map50: 0.82257, map50_95: 0.53306 }
   }
 };
 
 function selectedModelKey() {
-  return $('modelSelect')?.value || currentModelKey || 'yolo11s_dataset15';
+  return $('modelSelect')?.value || currentModelKey || DEFAULT_MODEL_KEY;
 }
 
 function modelPath(modelKey, size) {
   const model = MODEL_CATALOG[modelKey];
   if (!model) throw new Error(`Modelo ${modelKey} no configurado.`);
-  const path = model.profiles[size];
-  if (!path) throw new Error(`Resolución ${size} no configurada para ${model.label}.`);
-  return path;
+  if (Number(size) !== model.inputSize) {
+    throw new Error(`${model.label} requiere ${model.inputSize}×${model.inputSize}.`);
+  }
+  return model.model;
 }
 
 function modelLabel(modelKey = currentModelKey) {
@@ -233,7 +238,7 @@ const state = {
   confidence: 0.35,
   iou: 0.45,
   skip: 1,
-  inputSize: 640,
+  inputSize: VALIDATED_INPUT_SIZE,
   performanceMode: 'manual',
   required: new Set(),
   visible: new Set(),
@@ -273,7 +278,7 @@ const colors = [
   '#bcaaa4'  // Regular Shoes
 ];
 
-ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@dev/dist/';
+ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
 ort.env.wasm.numThreads = 1;
 ort.env.wasm.proxy = false;
 
@@ -792,19 +797,26 @@ setInterval(() => {
   updateSystemDiagnostics();
 }, 1000);
 
-async function loadMetadata(url = 'models/epp-yolo11/metadata.json') {
+async function loadMetadata(
+  url = MODEL_CATALOG[DEFAULT_MODEL_KEY].metadata,
+  { preserveSelections = false } = {}
+) {
   metadata = await fetch(url).then(r => {
     if (!r.ok) throw Error('No se pudo cargar metadata.json');
     return r.json();
   });
-  applyMetadata();
+  applyMetadata({ preserveSelections });
 }
 
-function applyMetadata() {
-  state.required = new Set(metadata.requiredDefaults || []);
-  state.visible = new Set(metadata.classes.map((_, i) => i));
+function applyMetadata({ preserveSelections = false } = {}) {
+  if (!preserveSelections || state.required.size === 0) {
+    state.required = new Set(metadata.requiredDefaults || []);
+  }
+  if (!preserveSelections || state.visible.size === 0) {
+    state.visible = new Set(metadata.classes.map((_, i) => i));
+  }
   renderClassChecks();
-  if (!state.inputSize) state.inputSize = metadata.inputSize || 640;
+  state.inputSize = metadata.inputSize || VALIDATED_INPUT_SIZE;
   $('inputSize').textContent = `${state.inputSize}×${state.inputSize}`;
 }
 
@@ -883,7 +895,7 @@ async function fetchModelWithProgress(url, onProgress) {
 
 async function createSession(
   model,
-  inputSize = state.inputSize || metadata?.inputSize || 480,
+  inputSize = state.inputSize || metadata?.inputSize || VALIDATED_INPUT_SIZE,
   modelKey = currentModelKey
 ) {
   const modelDescription = `${modelLabel(modelKey)} · ${inputSize}×${inputSize}`;
@@ -1118,7 +1130,7 @@ async function createSession(
 
 async function warmup() {
   if (!session) return;
-  const size = state.inputSize || metadata?.inputSize || 480;
+  const size = state.inputSize || metadata?.inputSize || VALIDATED_INPUT_SIZE;
   const zero = new Float32Array(3 * size * size);
   const inputName = session.inputNames[0];
   const inputTensor = new ort.Tensor('float32', zero, [1, 3, size, size]);
@@ -1134,8 +1146,16 @@ async function loadProfile(size, { fallback = false, reason = 'manual', modelKey
 
   const previousProfile = currentProfile;
   const previousModel = currentModelKey;
+  const previousMetadata = metadata;
 
   try {
+    const catalogEntry = MODEL_CATALOG[modelKey];
+    if (!catalogEntry) throw new Error(`Modelo ${modelKey} no configurado.`);
+
+    if (metadata?.modelKey !== modelKey) {
+      await loadMetadata(catalogEntry.metadata, { preserveSelections: true });
+    }
+
     const path = modelPath(modelKey, size);
     const ok = await createSession(path, size, modelKey);
     if (!ok) return false;
@@ -1149,6 +1169,9 @@ async function loadProfile(size, { fallback = false, reason = 'manual', modelKey
   } catch (error) {
     currentProfile = previousProfile;
     currentModelKey = previousModel;
+    metadata = previousMetadata;
+
+    if (metadata) applyMetadata({ preserveSelections: true });
 
     if ($('resolutionSelect')) $('resolutionSelect').value = String(previousProfile);
     if ($('modelSelect')) $('modelSelect').value = previousModel;
@@ -1158,15 +1181,8 @@ async function loadProfile(size, { fallback = false, reason = 'manual', modelKey
 }
 
 async function loadDefault() {
-  if (DEVICE.isIOS) {
-    currentModelKey = 'yolo11s_dataset15';
-    state.inputSize = 480;
-    if ($('modelSelect')) $('modelSelect').value = 'yolo11s_dataset15';
-    if ($('resolutionSelect')) $('resolutionSelect').value = '480';
-  }
-
   if (!metadata) await loadMetadata();
-  const requested = Number($('resolutionSelect').value || 512);
+  const requested = VALIDATED_INPUT_SIZE;
   await loadProfile(requested, { fallback: true, reason: 'manual', modelKey: selectedModelKey() });
 }
 
@@ -1182,25 +1198,8 @@ function markInferenceComplete() {
 function recordLatencyForAutoTune(ms) {
   latencyHistory.push(ms);
   if (latencyHistory.length > 10) latencyHistory.shift();
-  if (benchmarkState.active || state.performanceMode !== 'auto' || latencyHistory.length < 6 || profileSwitching) return;
-  const now = performance.now();
-  if (now - lastProfileSwitchAt < 8000) return;
-
-  const avg = latencyHistory.reduce((a, b) => a + b, 0) / latencyHistory.length;
-  let target = currentProfile;
-  if (avg > 180 && currentProfile === 640) target = 512;
-  else if (avg > 150 && currentProfile === 512) target = 480;
-  else if (avg < 65 && currentProfile === 480) target = 512;
-  else if (avg < 55 && currentProfile === 512) target = 640;
-
-  if (target !== currentProfile) {
-    loadProfile(target, { fallback: false, reason: 'auto', modelKey: currentModelKey }).catch(error => {
-      console.warn('Ajuste automático no disponible:', error);
-      state.performanceMode = 'manual';
-      $('performanceMode').value = 'manual';
-      setStatus(`Modo automático detenido: falta el modelo ${target}×${target}. Genere los perfiles ONNX 512/480.`);
-    });
-  }
+  // La versión de tesis usa 640×640 fijo para que las comparaciones entre
+  // arquitecturas y dispositivos conserven exactamente la misma entrada.
 }
 
 function setStatus(text) {
@@ -1557,7 +1556,7 @@ async function infer() {
   ensureCanvasSize(sourceWidth, sourceHeight);
 
   const crop = roiPixels(sourceWidth, sourceHeight);
-  const size = state.inputSize || metadata.inputSize || 480;
+  const size = state.inputSize || metadata.inputSize || VALIDATED_INPUT_SIZE;
   const workspace = getInferenceWorkspace(size);
   const offCtx = workspace.ctx;
   const input = workspace.input;
@@ -1716,15 +1715,18 @@ function nms(boxes, iouThreshold) {
   for (const classId of new Set(boxes.map(box => box[5]))) {
     let queue = boxes
       .filter(box => box[5] === classId)
-      .sort((a, b) => b[4] - a[4]);
+      .sort((a, b) => b[4] - a[4])
+      .slice(0, MAX_NMS_CANDIDATES);
 
-    while (queue.length) {
+    while (queue.length && output.length < MAX_DETECTIONS) {
       const current = queue.shift();
       output.push(current);
       queue = queue.filter(box => iou(current, box) < iouThreshold);
     }
   }
-  return output;
+  return output
+    .sort((a, b) => b[4] - a[4])
+    .slice(0, MAX_DETECTIONS);
 }
 
 function iou(a, b) {
@@ -2505,7 +2507,7 @@ function factoryConfigFromUi() {
     confidence: state.confidence,
     iou: state.iou,
     modelKey: selectedModelKey(),
-    inputSize: Number($('resolutionSelect')?.value || state.inputSize || 480),
+    inputSize: VALIDATED_INPUT_SIZE,
     performanceMode: $('performanceMode')?.value || state.performanceMode,
     inferenceMinIntervalMs: Number($('frameSkip')?.value || state.inferenceMinIntervalMs || 0),
     personRecoverySec: Number($('personRecoverySec')?.value || state.personHoldMs / 1000 || 10),
@@ -2566,10 +2568,8 @@ function loadFactoryConfig() {
       currentModelKey = config.modelKey;
       if ($('modelSelect')) $('modelSelect').value = config.modelKey;
     }
-    if ([480, 512, 640].includes(Number(config.inputSize))) {
-      state.inputSize = Number(config.inputSize);
-      if ($('resolutionSelect')) $('resolutionSelect').value = String(config.inputSize);
-    }
+    state.inputSize = VALIDATED_INPUT_SIZE;
+    if ($('resolutionSelect')) $('resolutionSelect').value = String(VALIDATED_INPUT_SIZE);
 
     state.performanceMode = config.performanceMode || state.performanceMode;
     if ($('performanceMode')) $('performanceMode').value = state.performanceMode;
@@ -3587,7 +3587,11 @@ function reportMeta() {
     owner: $('reportOwner').value.trim(),
     startedAt: reportStartedAt.toISOString(),
     generatedAt: new Date().toISOString(),
-    model: metadata?.name || $('modelSelect').selectedOptions[0]?.textContent || '',
+    model: modelLabel(currentModelKey),
+    modelKey: currentModelKey,
+    dataset: '17_PPE_ECUADOR_BALANCED_V1',
+    appVersion: APP_VERSION,
+    onnxRuntimeVersion: ORT_VERSION,
     requiredEpp: metadata ? [...state.required].map(id => metadata.classes[id]) : [],
     confidence: state.confidence,
     iouNms: state.iou,
@@ -3756,7 +3760,9 @@ async function sendThingSpeak() {
     $('iotStatus').textContent = 'Ingrese la Write API Key.';
     return;
   }
-  localStorage.setItem('eppThingSpeakKey', key);
+  // La clave se conserva únicamente durante la pestaña actual.
+  // No se persiste en el almacenamiento local del navegador.
+  sessionStorage.setItem('eppThingSpeakKey', key);
   const s = reportSummary();
   const compliancePct = s.currentPersons
     ? Number((100 * s.compliantNow / s.currentPersons).toFixed(1))
@@ -3890,12 +3896,12 @@ $('modelInput').onchange = async event => {
 
     // Detectar resolución desde el nombre del archivo
     const match = file.name.match(
-      /(?:_|-)(320|416|480|512|640)(?:\.|_|-)/i
+      /(?:_|-)(640)(?:\.|_|-)/i
     );
 
     const inputSize = match
       ? Number(match[1])
-      : Number($('resolutionSelect')?.value || 640);
+      : VALIDATED_INPUT_SIZE;
 
     state.inputSize = inputSize;
     currentProfile = inputSize;
@@ -3982,12 +3988,6 @@ $('frameSkip').onchange = event => {
 };
 
 $('modelSelect').onchange = event => {
-  if (DEVICE.isIOS && event.target.value === 'yolo11m_dataset15') {
-    event.target.value = 'yolo11s_dataset15';
-    currentModelKey = 'yolo11s_dataset15';
-    setStatus('En iPhone/iPad se utiliza YOLO11s 480×480 para evitar errores de memoria.');
-    return;
-  }
   const modelKey = event.target.value;
   if (!session) {
     currentModelKey = modelKey;
@@ -3995,14 +3995,15 @@ $('modelSelect').onchange = event => {
     setStatus(`${modelLabel(modelKey)} seleccionado. Pulse Cargar modelo.`);
     return;
   }
-  const size = Number($('resolutionSelect').value || currentProfile || 512);
+  const size = VALIDATED_INPUT_SIZE;
   loadProfile(size, { fallback: true, reason: 'manual', modelKey }).catch(error =>
     setStatus(`No se pudo cargar ${modelLabel(modelKey)}: ${error.message}`)
   );
 };
 
 $('resolutionSelect').onchange = event => {
-  const size = Number(event.target.value);
+  const size = VALIDATED_INPUT_SIZE;
+  event.target.value = String(size);
   if (!session) {
     state.inputSize = size;
     $('inputSize').textContent = `${size}×${size} (pendiente)`;
@@ -4012,11 +4013,10 @@ $('resolutionSelect').onchange = event => {
 };
 
 $('performanceMode').onchange = event => {
-  state.performanceMode = event.target.value;
+  state.performanceMode = 'manual';
+  event.target.value = 'manual';
   latencyHistory = [];
-  setStatus(state.performanceMode === 'auto'
-    ? 'Modo rendimiento automático activo. Ajustará la resolución según la latencia si los perfiles ONNX están disponibles.'
-    : 'Modo rendimiento manual activo.');
+  setStatus('Modo controlado activo: modelo y resolución permanecen fijos durante la prueba.');
 };
 
 
@@ -4127,7 +4127,7 @@ $('evidenceEndpoint').onchange = event => {
 
 $('evidenceApiKey').onchange = event => {
   state.evidenceApiKey = event.target.value.trim();
-  localStorage.setItem('eppEvidenceApiKey', state.evidenceApiKey);
+  sessionStorage.setItem('eppEvidenceApiKey', state.evidenceApiKey);
 };
 
 $('captureEvidenceBtn').onclick = () => {
@@ -4144,7 +4144,7 @@ $('thingSpeakInterval').onchange = () => {
   );
   configureThingSpeakTimer();
 };
-$('thingSpeakKey').value = localStorage.getItem('eppThingSpeakKey') || '';
+$('thingSpeakKey').value = sessionStorage.getItem('eppThingSpeakKey') || '';
 
 
 function restoreReportSession() {
@@ -4174,13 +4174,13 @@ function restoreReportSession() {
   }
 }
 
-$('modelSelect').value = 'yolo11s_dataset15';
-currentModelKey = 'yolo11s_dataset15';
-$('activeModel').textContent = 'YOLO11s · Dataset 15 (pendiente)';
-$('resolutionSelect').value = '480';
+$('modelSelect').value = DEFAULT_MODEL_KEY;
+currentModelKey = DEFAULT_MODEL_KEY;
+$('activeModel').textContent = `${modelLabel(DEFAULT_MODEL_KEY)} (pendiente)`;
+$('resolutionSelect').value = String(VALIDATED_INPUT_SIZE);
 $('performanceMode').value = state.performanceMode;
-state.inputSize = 480;
-$('inputSize').textContent = '480×480 (pendiente)';
+state.inputSize = VALIDATED_INPUT_SIZE;
+$('inputSize').textContent = `${VALIDATED_INPUT_SIZE}×${VALIDATED_INPUT_SIZE} (pendiente)`;
 
 const savedReportIntervalSec = Math.max(
   1,
@@ -4217,7 +4217,7 @@ state.evidenceEnabled = savedEvidenceEnabled;
 state.evidenceCooldownMs = savedEvidenceCooldownSec * 1000;
 state.evidenceQuality = savedEvidenceQuality;
 state.evidenceEndpoint = localStorage.getItem('eppEvidenceEndpoint') || '';
-state.evidenceApiKey = localStorage.getItem('eppEvidenceApiKey') || '';
+state.evidenceApiKey = sessionStorage.getItem('eppEvidenceApiKey') || '';
 
 $('evidenceEnabled').checked = state.evidenceEnabled;
 $('evidenceCooldown').value = String(savedEvidenceCooldownSec);
@@ -4254,10 +4254,6 @@ function applyDeviceProfile() {
       const closest = values.reduce((a, b) => Math.abs(b - profile.inferenceMs) < Math.abs(a - profile.inferenceMs) ? b : a, values[0]);
       $('frameSkip').value = String(closest);
       state.inferenceMinIntervalMs = closest;
-    }
-
-    for (const option of $('modelSelect')?.options || []) {
-      if (option.value === 'yolo11m_dataset15') option.disabled = true;
     }
 
     if (DEVICE.isIOS) {
@@ -4325,3 +4321,11 @@ window.addEventListener('beforeunload', () => {
     } catch (_) {}
   }
 });
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(error => {
+      console.warn('No se pudo registrar el modo instalable:', error);
+    });
+  });
+}

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Comparación YOLO11 · Dataset 17</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:1180px;margin:auto;padding:28px;color:#142033}
+h1,h2{color:#071b31} .notice{background:#eaf8f2;border-left:5px solid #19b979;padding:14px}
+table{border-collapse:collapse;width:100%} th,td{border:1px solid #ccd6df;padding:9px;text-align:right}
+th:first-child,td:first-child{text-align:left} img{width:100%;border:1px solid #dce4ea;margin:12px 0 28px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:22px} @media(max-width:800px){.grid{grid-template-columns:1fr}}
+</style></head><body>
+<h1>Comparación final YOLO11 · Dataset 17</h1>
+<p class="notice"><b>Selección operativa:</b> YOLO11s por equilibrio. YOLO11m maximiza exactitud y YOLO11n minimiza costo.</p>
+<table><thead><tr><th>Modelo</th><th>Precisión</th><th>Recall</th><th>F1</th><th>mAP50</th><th>mAP50-95</th><th>ms/img V100</th></tr></thead>
+<tbody><tr><td>YOLO11n</td><td>0.8123</td><td>0.7424</td><td>0.7758</td><td>0.8011</td><td>0.5074</td><td>2.301</td></tr>
+<tr><td>YOLO11s</td><td>0.8129</td><td>0.7832</td><td>0.7977</td><td>0.8208</td><td>0.5286</td><td>3.044</td></tr>
+<tr><td>YOLO11m</td><td>0.8279</td><td>0.7692</td><td>0.7975</td><td>0.8226</td><td>0.5331</td><td>7.194</td></tr></tbody></table>
+<h2>Figuras</h2><div class="grid">
+<img src="01_metricas_globales.png" alt="Métricas globales">
+<img src="02_map5095_por_clase.png" alt="mAP por clase">
+<img src="03_exactitud_vs_latencia.png" alt="Exactitud y latencia">
+<img src="04_recursos_modelos.png" alt="Recursos de los modelos">
+</div>
+<p><b>Alcance:</b> la latencia procede de una Tesla V100 y no sustituye el benchmark en celulares, tabletas o laptops.</p>
+</body></html>

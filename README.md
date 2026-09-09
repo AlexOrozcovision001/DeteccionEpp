@@ -1,76 +1,88 @@
-# Detección EPP en tiempo real
+# EPP Guard · Dataset 17
 
-Aplicación web estática para detección de EPP con modelos YOLO exportados a ONNX y ejecutados directamente en el navegador mediante ONNX Runtime Web.
+Aplicación web para detección local de equipos de protección personal con
+ONNX Runtime Web. Permite comparar los modelos finales YOLO11n, YOLO11s y
+YOLO11m entrenados con el mismo Dataset 17.
 
-## Funciones
+## Configuración controlada
 
-- Cámara, video e imagen local.
-- WebGPU con respaldo WASM.
-- Detección de 8 clases de EPP.
-- Seguimiento temporal de personas con ID persistente.
-- Persistencia e histéresis de EPP para reducir el parpadeo de detecciones.
-- Selección interactiva de ROI (Region of Interest).
-- EPP obligatorios configurables y evaluación CUMPLE / NO CUMPLE por persona.
-- Reporte descargable en CSV y JSON.
-- Reporte imprimible / guardable como PDF desde el navegador.
-- Envío opcional de resumen a ThingSpeak mediante Write API Key ingresada por el usuario.
-- Carga local de modelos ONNX y metadatos JSON compatibles.
+- Entrada fija: `1 × 3 × 640 × 640`.
+- Precisión: FP32.
+- Salida esperada: `1 × 12 × 8400`.
+- Ocho clases: Person, Hardhat, Safety Vest, Safety Glasses, Gloves,
+  Safety Boots, Regular Glasses y Regular Shoes.
+- WebGPU en navegadores compatibles y WASM como respaldo.
+- YOLO11s es el modelo predeterminado por su equilibrio entre F1, recall,
+  exactitud y latencia.
 
-## Orden de uso recomendado
+## Exportar los tres modelos
 
-1. Pulsar **Cargar predeterminado**.
-2. Seleccionar los EPP obligatorios.
-3. Opcionalmente seleccionar un ROI.
-4. Iniciar cámara, abrir video o abrir imagen.
-5. Revisar IDs de personas y cumplimiento.
-6. Descargar el reporte o enviarlo a ThingSpeak.
-
-## Modelo
-
-GitHub Pages no ejecuta `.pt`. El modelo debe estar exportado a ONNX y ubicado en:
-
-```text
-models/epp-yolo11/model.onnx
-```
-
-Los metadatos están en:
-
-```text
-models/epp-yolo11/metadata.json
-```
-
-## GitHub Pages
-
-Publicar desde la rama `main`, carpeta `/ (root)`.
-
-
-## Perfiles de rendimiento 640 / 512 / 480
-
-La aplicación v6 puede cambiar entre tres modelos ONNX estáticos. Un modelo exportado a 640 no se vuelve realmente más rápido solo porque el navegador redimensione la imagen; para reducir cómputo se necesitan exportaciones separadas.
-
-Desde la raíz del proyecto, con el entorno de Ultralytics activo:
+En el servidor que contiene los pesos finales:
 
 ```bash
-python scripts/export_web_profiles.py --weights best.pt
+cd /ruta/al/repositorio/DeteccionEpp
+source /home/aorozcogalan/MROB/PPE_YOLO11/.venv_yolo11_84116/bin/activate
+pip install -r requirements.txt
+
+python scripts/export_final_models.py \
+  --training-root /home/aorozcogalan/MROB/PPE_YOLO11 \
+  --app-root "$PWD"
 ```
 
-Se crearán:
+El script no modifica los entrenamientos. Copia temporalmente cada `best.pt`,
+exporta y valida los ONNX, y genera:
 
 ```text
-models/epp-yolo11/model.onnx      # 640x640
-models/epp-yolo11/model_512.onnx  # 512x512
-models/epp-yolo11/model_480.onnx  # 480x480
+models/yolo11n_dataset17/model_640.onnx
+models/yolo11s_dataset17/model_640.onnx
+models/yolo11m_dataset17/model_640.onnx
+models/export_summary.json
 ```
 
-La interfaz muestra FPS, latencia e IPS. En modo automático, si la latencia media es alta baja 640→512→480; si el dispositivo es muy rápido puede volver a subir la resolución. Si falta uno de los perfiles, el modo automático se detiene y la interfaz lo indica.
+## Probar localmente
 
+No abra `index.html` con `file://`; la cámara, los modelos y el service worker
+requieren un servidor HTTP/HTTPS.
 
-## Catálogo multi-modelo
+```bash
+python3 -m http.server 8000
+```
 
-La interfaz soporta tres entrenamientos y tres resoluciones por entrenamiento:
+Abra `http://localhost:8000`. En otro dispositivo de la red la cámara exige
+HTTPS; GitHub Pages ya cumple este requisito.
 
-- YOLO11s modelo anterior: 640, 512 y 480.
-- YOLO11s Dataset 15: 640, 512 y 480.
-- YOLO11m Dataset 15: 640, 512 y 480.
+## Generar figuras para la tesis
 
-Cada modelo se carga bajo demanda; abrir la página no descarga los nueve archivos ONNX.
+```bash
+python scripts/generate_thesis_figures.py
+```
+
+Los PNG, la tabla CSV y el resumen JSON quedan en `docs/figures/`. La fuente
+original permanece en `docs/evaluation/dataset17_models_comparison_v1/`.
+
+## Publicar en GitHub Pages
+
+Después de verificar que los tres ONNX estén presentes:
+
+```bash
+git add index.html css js manifest.webmanifest sw.js assets models scripts docs
+git commit -m "Integra modelos finales Dataset 17 y evidencia de tesis"
+git push origin main
+```
+
+GitHub no acepta archivos individuales mayores de 100 MB. Los ONNX FP32 de
+estas variantes normalmente quedan por debajo de ese límite, pero debe
+comprobarse antes del commit:
+
+```bash
+find models -name '*.onnx' -printf '%s %p\n' | sort -n
+```
+
+## Seguridad y alcance de los resultados
+
+- Las claves de evidencia y ThingSpeak se conservan solo durante la pestaña
+  activa; no se guardan de forma persistente en el navegador.
+- Las métricas de exactitud provienen del mismo conjunto `test` del Dataset 17.
+- Las latencias de la V100 permiten comparar modelos bajo un entorno común,
+  pero no predicen la velocidad en celulares, tabletas o laptops. Use el panel
+  Benchmark en cada dispositivo final.
