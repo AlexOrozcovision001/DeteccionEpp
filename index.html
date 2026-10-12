@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>EPP Guard · Monitoreo inteligente</title>
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="css/styles.css?v=14">
+  <link rel="stylesheet" href="css/styles.css?v=15">
   <script>
     window.__EPP_BOOT__ = (() => {
       const ua = navigator.userAgent;
@@ -152,16 +152,14 @@
 
       <section class="card">
         <h3>4 · Modelo y detección</h3>
-        <div class="field"><label>Modelo final · Dataset 17</label><select id="modelSelect">
-          <option value="yolo11n_dataset17">YOLO11n · Ligero</option>
-          <option value="yolo11s_dataset17" selected>YOLO11s · Equilibrado (recomendado)</option>
-          <option value="yolo11m_dataset17">YOLO11m · Mayor exactitud</option>
+        <div class="field"><label>Modelo de pruebas · Dataset 17</label><select id="modelSelect" disabled>
+          <option value="yolo11s_dataset17" selected>YOLO11s · Dataset 17 · 640 × 640</option>
         </select></div>
-        <div class="field"><label>Resolución IA</label><select id="resolutionSelect">
+        <div class="field"><label>Resolución IA</label><select id="resolutionSelect" disabled>
           <option value="640" selected>640 × 640 · Resolución validada</option>
         </select></div>
-        <p class="hint">Los tres modelos fueron entrenados y evaluados con el mismo Dataset 17 y la misma resolución. Se carga únicamente el modelo seleccionado.</p>
-        <div class="row-actions"><button id="loadDefaultBtn" class="primary">Cargar modelo</button><label class="button">ONNX<input id="modelInput" type="file" accept=".onnx" hidden></label><label class="button">Metadatos<input id="metadataInput" type="file" accept=".json" hidden></label></div>
+        <p class="hint">Las pruebas utilizan únicamente YOLO11s de Dataset 17 a 640 × 640. El modelo se descarga al pulsar Cargar modelo o Iniciar monitoreo.</p>
+        <div class="row-actions"><button id="loadDefaultBtn" class="primary">Cargar modelo</button></div>
       </section>
 
       <section class="card">
@@ -289,6 +287,7 @@
 </main>
 
 <section id="printableReport" class="print-report" aria-hidden="true"></section>
-<script type="module" src="js/app.js?v=14"></script>
+<script type="module" src="js/app.js?v=15"></script>
 </body>
 </html>
+

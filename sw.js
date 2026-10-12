@@ -1,9 +1,9 @@
-const CACHE_NAME = 'epp-guard-shell-v14';
+const CACHE_NAME = 'epp-guard-shell-v15';
 const APP_SHELL = [
   './',
   './index.html',
-  './css/styles.css?v=14',
-  './js/app.js?v=14',
+  './css/styles.css?v=15',
+  './js/app.js?v=15',
   './manifest.webmanifest',
   './assets/icon-192.png',
   './assets/icon-512.png'
@@ -21,7 +21,7 @@ self.addEventListener('activate', event => {
   event.waitUntil(
     caches.keys()
       .then(keys => Promise.all(
-        keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))
+        keys.filter(key => key.startsWith('epp-guard-shell-') && key !== CACHE_NAME).map(key => caches.delete(key))
       ))
       .then(() => self.clients.claim())
   );
@@ -39,3 +39,4 @@ self.addEventListener('fetch', event => {
     caches.match(event.request).then(cached => cached || fetch(event.request))
   );
 });
+

@@ -5,9 +5,31 @@
   "dataset": "17_PPE_ECUADOR_BALANCED_V1",
   "inputSize": 640,
   "personClass": 0,
-  "classes": ["Person", "Hardhat", "Safety Vest", "Safety Glasses", "Gloves", "Safety Boots", "Regular Glasses", "Regular Shoes"],
-  "requiredDefaults": [1, 2, 3, 4, 5],
-  "outputShape": [1, 12, 8400],
+  "classes": [
+    "Person",
+    "Hardhat",
+    "Safety Vest",
+    "Safety Glasses",
+    "Gloves",
+    "Safety Boots",
+    "Regular Glasses",
+    "Regular Shoes"
+  ],
+  "requiredDefaults": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "outputShape": [
+    1,
+    12,
+    8400
+  ],
   "integratedNms": false,
-  "testMetrics": {"precision": 0.81289, "recall": 0.78316, "f1": 0.79775, "map50": 0.82082, "map50_95": 0.52864}
+  "sourceFile": "yolo11s_ppe_dataset17_fp32_640.onnx",
+  "exportedAt": "2026-08-26T19:16:49.802154+00:00",
+  "sha256": "59d50c776166a9620c5a315626114195e5a019b66e5c10a226734d64b9f9fb2a",
+  "sizeBytes": 37938851
 }

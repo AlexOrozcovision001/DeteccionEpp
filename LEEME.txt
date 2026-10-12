@@ -1,8 +1,8 @@
-EPP GUARD · VERSIÓN DATASET 17
+EPP GUARD · PRUEBAS YOLO11s DATASET 17
 
-1. Ejecute scripts/export_final_models.py en el servidor de entrenamiento.
-2. Confirme que existan los tres models/*/model_640.onnx.
-3. Pruebe la aplicación con python3 -m http.server 8000.
-4. Cargue YOLO11n, YOLO11s y YOLO11m individualmente.
-5. Use Benchmark para medir celular, tableta y laptop.
-6. Consulte README.md y docs/tesis/RESULTADOS_PARA_TESIS.md.
+1. El modelo ONNX recuperado está incluido en models/yolo11s_dataset17/model_640.onnx.
+2. Abra la aplicación desde GitHub Pages o mediante un servidor HTTP local.
+3. Pulse Cargar modelo en el administrador o Iniciar monitoreo.
+4. Modelo y resolución permanecen fijos: YOLO11s, 640 × 640.
+5. Use Benchmark para medir cada dispositivo y exportar los resultados.
+6. Consulte README.md y models/README.md para la procedencia del archivo.

@@ -12,7 +12,7 @@ const DEVICE = {
   cores: Number(navigator.hardwareConcurrency || 0)
 };
 
-const APP_VERSION = '14.0.0';
+const APP_VERSION = '15.0.0';
 const ORT_VERSION = '1.27.0';
 const DEFAULT_MODEL_KEY = 'yolo11s_dataset17';
 const VALIDATED_INPUT_SIZE = 640;
@@ -189,32 +189,18 @@ let inferenceWorkspace = {
   tensor: null
 };
 
+// Esta estación usa exclusivamente el ONNX recuperado de YOLO11s Dataset 17.
 const MODEL_CATALOG = {
-  yolo11n_dataset17: {
-    label: 'YOLO11n · Dataset 17 · Ligero',
-    inputSize: VALIDATED_INPUT_SIZE,
-    model: 'models/yolo11n_dataset17/model_640.onnx',
-    metadata: 'models/yolo11n_dataset17/metadata.json',
-    test: { precision: 0.81234, recall: 0.74238, f1: 0.77579, map50: 0.80112, map50_95: 0.50735 }
-  },
   yolo11s_dataset17: {
-    label: 'YOLO11s · Dataset 17 · Equilibrado',
+    label: 'YOLO11s · Dataset 17',
     inputSize: VALIDATED_INPUT_SIZE,
     model: 'models/yolo11s_dataset17/model_640.onnx',
-    metadata: 'models/yolo11s_dataset17/metadata.json',
-    test: { precision: 0.81289, recall: 0.78316, f1: 0.79775, map50: 0.82082, map50_95: 0.52864 }
-  },
-  yolo11m_dataset17: {
-    label: 'YOLO11m · Dataset 17 · Mayor exactitud',
-    inputSize: VALIDATED_INPUT_SIZE,
-    model: 'models/yolo11m_dataset17/model_640.onnx',
-    metadata: 'models/yolo11m_dataset17/metadata.json',
-    test: { precision: 0.82794, recall: 0.76923, f1: 0.79750, map50: 0.82257, map50_95: 0.53306 }
+    metadata: 'models/yolo11s_dataset17/metadata.json'
   }
 };
 
 function selectedModelKey() {
-  return $('modelSelect')?.value || currentModelKey || DEFAULT_MODEL_KEY;
+  return DEFAULT_MODEL_KEY;
 }
 
 function modelPath(modelKey, size) {
@@ -516,7 +502,7 @@ function currentPerformanceSnapshot() {
 }
 
 function setBenchmarkControls(active) {
-  for (const id of ['modelSelect', 'resolutionSelect', 'performanceMode', 'frameSkip', 'loadDefaultBtn']) {
+  for (const id of ['performanceMode', 'frameSkip', 'loadDefaultBtn']) {
     if ($(id)) $(id).disabled = active;
   }
   if ($('benchmarkDuration')) $('benchmarkDuration').disabled = active;
@@ -2564,9 +2550,13 @@ function loadFactoryConfig() {
       if ($('iouOut')) $('iouOut').value = Number(config.iou).toFixed(2);
     }
 
-    if (config.modelKey && MODEL_CATALOG[config.modelKey]) {
-      currentModelKey = config.modelKey;
-      if ($('modelSelect')) $('modelSelect').value = config.modelKey;
+    // Migrar selecciones antiguas sin perder cámara, ROI ni ajustes de la estación.
+    currentModelKey = DEFAULT_MODEL_KEY;
+    if ($('modelSelect')) $('modelSelect').value = DEFAULT_MODEL_KEY;
+    if (config.modelKey !== DEFAULT_MODEL_KEY || config.inputSize !== VALIDATED_INPUT_SIZE) {
+      config.modelKey = DEFAULT_MODEL_KEY;
+      config.inputSize = VALIDATED_INPUT_SIZE;
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
     }
     state.inputSize = VALIDATED_INPUT_SIZE;
     if ($('resolutionSelect')) $('resolutionSelect').value = String(VALIDATED_INPUT_SIZE);
@@ -3881,84 +3871,6 @@ $('loadDefaultBtn').onclick = () => loadDefault().catch(error => {
   setStatus(`No se pudo cargar el modelo predeterminado: ${error.message}`);
 });
 
-$('modelInput').onchange = async event => {
-  const file = event.target.files?.[0];
-  if (!file) return;
-
-  try {
-    setStatus(`Leyendo modelo ${file.name}...`);
-
-    // Leer el archivo correctamente
-    const arrayBuffer = await file.arrayBuffer();
-
-    // Convertir explícitamente a Uint8Array
-    const modelBytes = new Uint8Array(arrayBuffer);
-
-    // Detectar resolución desde el nombre del archivo
-    const match = file.name.match(
-      /(?:_|-)(640)(?:\.|_|-)/i
-    );
-
-    const inputSize = match
-      ? Number(match[1])
-      : VALIDATED_INPUT_SIZE;
-
-    state.inputSize = inputSize;
-    currentProfile = inputSize;
-
-    if ($('resolutionSelect')) {
-      const exists = [...$('resolutionSelect').options]
-        .some(option => Number(option.value) === inputSize);
-
-      if (exists) {
-        $('resolutionSelect').value = String(inputSize);
-      }
-    }
-
-    setStatus(
-      `Inicializando ${file.name} · ${inputSize}×${inputSize}...`
-    );
-
-    await createSession(
-      modelBytes,
-      inputSize,
-      currentModelKey
-    );
-
-    if ($('activeModel')) {
-      $('activeModel').textContent =
-        `${file.name} · ${inputSize}×${inputSize}`;
-    }
-
-    if ($('diagModel')) {
-      $('diagModel').textContent =
-        `${file.name} · ${inputSize}×${inputSize}`;
-    }
-
-    setStatus(
-      `Modelo cargado correctamente: <b>${file.name}</b> · ` +
-      `${inputSize}×${inputSize}`
-    );
-
-  } catch (error) {
-    console.error(error);
-
-    setStatus(
-      `Error al importar ONNX: ${error?.message || error}`
-    );
-  } finally {
-    event.target.value = '';
-  }
-};
-
-$('metadataInput').onchange = async event => {
-  const file = event.target.files[0];
-  if (!file) return;
-  metadata = JSON.parse(await file.text());
-  applyMetadata();
-  resetTracking();
-};
-
 $('cameraBtn').onclick = () => startCamera().catch(error => setStatus(error.message));
 $('videoInput').onchange = event => event.target.files[0] && openVideo(event.target.files[0]);
 $('imageInput').onchange = event => event.target.files[0] && openImage(event.target.files[0]);
@@ -3985,31 +3897,6 @@ $('frameSkip').onchange = event => {
 
   const label = event.target.selectedOptions[0]?.textContent || '';
   setStatus(`Ritmo de IA: ${label}.`);
-};
-
-$('modelSelect').onchange = event => {
-  const modelKey = event.target.value;
-  if (!session) {
-    currentModelKey = modelKey;
-    $('activeModel').textContent = `${modelLabel(modelKey)} (pendiente)`;
-    setStatus(`${modelLabel(modelKey)} seleccionado. Pulse Cargar modelo.`);
-    return;
-  }
-  const size = VALIDATED_INPUT_SIZE;
-  loadProfile(size, { fallback: true, reason: 'manual', modelKey }).catch(error =>
-    setStatus(`No se pudo cargar ${modelLabel(modelKey)}: ${error.message}`)
-  );
-};
-
-$('resolutionSelect').onchange = event => {
-  const size = VALIDATED_INPUT_SIZE;
-  event.target.value = String(size);
-  if (!session) {
-    state.inputSize = size;
-    $('inputSize').textContent = `${size}×${size} (pendiente)`;
-    return;
-  }
-  loadProfile(size, { fallback: true, reason: 'manual' }).catch(error => setStatus(`No se pudo cargar ${size}×${size}: ${error.message}`));
 };
 
 $('performanceMode').onchange = event => {
@@ -4329,3 +4216,4 @@ if ('serviceWorker' in navigator) {
     });
   });
 }
+
