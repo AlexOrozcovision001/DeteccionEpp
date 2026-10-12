@@ -27,3 +27,5 @@ input[type=number]{border:1px solid var(--line);background:#10283d;color:var(--t
 @media(max-width:700px){.diagnostic-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.temporal-settings{grid-template-columns:1fr}.benchmark-controls{width:100%}.benchmark-controls>*{flex:1 1 140px}}
 
 .monitor-compliance.warning,.compliance.warning{background:#4d3c15;color:#ffe083;box-shadow:0 0 0 1px #ffd16655,0 18px 45px #7a5c1326}
+
+.scene-summary{display:flex;align-items:center;margin-top:12px;padding:10px 14px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text);font-size:1rem;font-weight:800}

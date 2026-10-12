@@ -12,7 +12,7 @@ const DEVICE = {
   cores: Number(navigator.hardwareConcurrency || 0)
 };
 
-const APP_VERSION = '17.0.0';
+const APP_VERSION = '18.0.0';
 const ORT_VERSION = '1.27.0';
 const DEFAULT_MODEL_KEY = 'yolo11s_dataset17';
 const VALIDATED_INPUT_SIZE = 640;
@@ -108,6 +108,8 @@ let lastBoxes = [];
 let lastPeople = [];
 let tracks = [];
 let nextTrackId = 1;
+// Numeración exclusiva de personas; los EPP conservan sus IDs internos.
+let nextPersonId = 1;
 let roiDraft = null;
 let roiPointerStart = null;
 let iotTimer = null;
@@ -1205,6 +1207,7 @@ function resetTracking(reason = 'manual') {
 
   if ($('ips')) $('ips').textContent = '0.0 IPS';
   if ($('detectionCount')) $('detectionCount').textContent = '0';
+  if ($('scenePersonCount')) $('scenePersonCount').textContent = 'Personas en escena: 0';
 
   if ($('persons')) {
     $('persons').innerHTML =
@@ -1867,6 +1870,7 @@ function updateTracks(detections) {
 
     tracks.push({
       id: nextTrackId++,
+      personId: det[5] === metadata.personClass ? nextPersonId++ : null,
       classId: det[5],
       box: det.slice(),
       missed: 0,
@@ -1890,6 +1894,7 @@ function updateTracks(detections) {
   return tracks.map(track => {
     const box = track.box.slice();
     box.trackId = track.id;
+    box.personId = track.personId;
     box.missed = track.missed;
     box.hits = track.hits;
     box.lastSeen = track.lastSeen;
@@ -1905,7 +1910,7 @@ function rawAssociate(boxes) {
   const people = boxes
     .filter(box => box[5] === metadata.personClass)
     .map((box, index) => ({
-      id: box.trackId || index + 1,
+      id: box.personId || index + 1,
       box,
       rawEpp: new Map(),
       epp: new Map(),
@@ -2220,10 +2225,8 @@ function render(boxes = lastBoxes, people = lastPeople, updateUi = true) {
       : person?.ok
         ? 'CUMPLE'
         : 'NO CUMPLE';
-    const adminLabel = `Persona ${person?.id || box.trackId || ''} · ${status}`;
-    const monitorLabel = status;
     const lost = Boolean(person?.temporarilyLost);
-    const label = `${adminUnlocked ? adminLabel : monitorLabel}${lost ? ' · seguimiento' : ''}`;
+    const label = `${status}${lost ? ' · seguimiento' : ''}`;
     const alpha = lost
       ? Math.max(
           0.28,
@@ -2251,6 +2254,10 @@ function render(boxes = lastBoxes, people = lastPeople, updateUi = true) {
 
 function renderCompliance(people) {
   const container = $('persons');
+  const visiblePeople = people.filter(person => !person.temporarilyLost).length;
+  if ($('scenePersonCount')) {
+    $('scenePersonCount').textContent = `Personas en escena: ${visiblePeople}`;
+  }
 
   if (!people.length) {
     container.innerHTML =
@@ -2278,7 +2285,7 @@ function renderCompliance(people) {
     card.innerHTML = `
       <div class="person-head">
         <div>
-          <b>Persona ${person.id}</b>
+          <b>Evaluación de EPP</b>
           ${personState}
         </div>
         <span class="badge ${
@@ -3724,7 +3731,9 @@ function clearReport() {
   sessionLog.length = 0;
   personStats.clear();
   personEvidence.clear();
+  resetTracking('nuevo reporte');
   nextTrackId = 1;
+  nextPersonId = 1;
   reportStartedAt = new Date();
   lastReportSampleAt = 0;
   sampleSequence = 0;
@@ -4040,6 +4049,9 @@ function restoreReportSession() {
     const saved = JSON.parse(localStorage.getItem('eppSessionLog') || '[]');
     if (Array.isArray(saved) && saved.length) {
       sessionLog.push(...saved);
+      // Continuar los IDs de personas ya registradas sin reutilizar el historial.
+      nextPersonId = saved.reduce((maxId, record) =>
+        Math.max(maxId, Number(record.personId) || 0), 0) + 1;
       const intervalSec = Math.round(state.reportSampleIntervalMs / 1000);
       $('reportEventsBadge').textContent =
         `Registro · cada ${intervalSec} s · ${sessionLog.length}`;

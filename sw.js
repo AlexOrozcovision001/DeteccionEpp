@@ -1,9 +1,9 @@
-const CACHE_NAME = 'epp-guard-shell-v17';
+const CACHE_NAME = 'epp-guard-shell-v18';
 const APP_SHELL = [
   './',
   './index.html',
-  './css/styles.css?v=17',
-  './js/app.js?v=17',
+  './css/styles.css?v=18',
+  './js/app.js?v=18',
   './manifest.webmanifest',
   './assets/icon-192.png',
   './assets/icon-512.png'

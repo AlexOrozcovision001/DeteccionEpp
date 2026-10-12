@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>EPP Guard · Monitoreo inteligente</title>
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="css/styles.css?v=17">
+  <link rel="stylesheet" href="css/styles.css?v=18">
   <script>
     window.__EPP_BOOT__ = (() => {
       const ua = navigator.userAgent;
@@ -83,6 +83,8 @@
         </div>
         <div id="roiHint" class="roi-hint hidden">Arrastre para definir el área de monitoreo</div>
       </div>
+
+      <div class="scene-summary"><span id="scenePersonCount" role="status" aria-live="polite">Personas en escena: 0</span></div>
 
       <div id="monitorLiveControls" class="controls monitor-controls">
         <button id="monitorStartBtn" class="primary jumbo">▶ Iniciar monitoreo</button>
@@ -287,7 +289,7 @@
 </main>
 
 <section id="printableReport" class="print-report" aria-hidden="true"></section>
-<script type="module" src="js/app.js?v=17"></script>
+<script type="module" src="js/app.js?v=18"></script>
 </body>
 </html>
 
