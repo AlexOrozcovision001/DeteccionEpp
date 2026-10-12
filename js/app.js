@@ -12,7 +12,7 @@ const DEVICE = {
   cores: Number(navigator.hardwareConcurrency || 0)
 };
 
-const APP_VERSION = '15.0.0';
+const APP_VERSION = '16.0.0';
 const ORT_VERSION = '1.27.0';
 const DEFAULT_MODEL_KEY = 'yolo11s_dataset17';
 const VALIDATED_INPUT_SIZE = 640;
