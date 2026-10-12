@@ -12,7 +12,7 @@ const DEVICE = {
   cores: Number(navigator.hardwareConcurrency || 0)
 };
 
-const APP_VERSION = '16.0.0';
+const APP_VERSION = '17.0.0';
 const ORT_VERSION = '1.27.0';
 const DEFAULT_MODEL_KEY = 'yolo11s_dataset17';
 const VALIDATED_INPUT_SIZE = 640;
@@ -194,7 +194,7 @@ const MODEL_CATALOG = {
   yolo11s_dataset17: {
     label: 'YOLO11s · Dataset 17',
     inputSize: VALIDATED_INPUT_SIZE,
-    model: 'models/yolo11s_dataset17/model_640.onnx',
+    model: 'models/yolo11s_dataset17/model_640.onnx?v=59d50c776166',
     metadata: 'models/yolo11s_dataset17/metadata.json'
   }
 };
@@ -839,7 +839,8 @@ function renderClassChecks() {
 }
 
 async function fetchModelWithProgress(url, onProgress) {
-  const response = await fetch(url, { cache: 'force-cache' });
+  // Revalidar la descarga para no reutilizar errores HTTP guardados antes de publicar el ONNX.
+  const response = await fetch(url, { cache: 'no-cache' });
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} al descargar ${url}`);
