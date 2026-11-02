@@ -49,3 +49,30 @@ para que los navegadores reciban la configuración de modelo único.
 
 Las claves opcionales de evidencia y ThingSpeak se conservan durante la pestaña
 activa. La carga del modelo y la inferencia se realizan en el dispositivo.
+
+## Banco de imágenes (versión 19)
+
+En el panel del administrador, use **Seleccionar imágenes** para cargar varios
+archivos o **Seleccionar carpeta** para incluir las imágenes de sus subcarpetas.
+Pulse **Aplicar detección**; el modelo fijo se carga automáticamente si hace falta.
+El monitoreo se detiene mientras se procesa el lote. Para retomarlo, inicie la cámara.
+
+- Formatos: JPG/JPEG, PNG, WebP y BMP. Los demás archivos se omiten.
+- Máximo 500 imágenes por lote, 40 MB y 24 megapíxeles por imagen.
+- Se procesa una imagen a la vez, con la confianza y el IoU configurados.
+- Se usa la imagen completa, sin ROI, seguimiento ni persistencia temporal.
+- **Cancelar lote** termina la imagen en curso y conserva los resultados parciales.
+- **Descargar resultados ZIP** genera `imagenes/` con JPEG anotados,
+  `detecciones.csv` y `resultados.json`. Los informes incluyen archivos sin
+  detecciones y errores; el JSON conserva las clases, configuración y coordenadas
+  `[x1,y1,x2,y2]` en píxeles de la imagen decodificada.
+- Los nombres de salida llevan un índice para evitar colisiones entre carpetas.
+- Al alcanzar 100 MB de imágenes de salida, el lote se detiene y permite descargar
+  lo procesado. Divida bancos grandes en varios lotes.
+
+La detección y exportación son locales y no envían el banco al servidor de
+ evidencias ni a ThingSpeak. El banco informa detecciones por imagen; no genera
+ dictámenes de cumplimiento basados en la persistencia temporal de la cámara.
+Los resultados se conservan en memoria hasta iniciar otro lote o cerrar/recargar
+la página. Descargue el ZIP antes de hacerlo.
+

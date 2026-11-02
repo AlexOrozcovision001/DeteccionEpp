@@ -129,6 +129,21 @@
       </div>
     </div>
 
+    <section class="card" style="margin-bottom:20px">
+      <h3>Banco de imágenes · Detección por lotes</h3>
+      <p class="hint">Seleccione imágenes JPG, PNG, WebP o BMP, o una carpeta. Se analiza la imagen completa con YOLO11s Dataset 17. Las imágenes se procesan localmente. Máximo 500 imágenes y 100 MB de resultados por lote.</p>
+      <div class="row-actions">
+        <label class="button">Seleccionar imágenes<input id="bankFiles" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" multiple hidden></label>
+        <label class="button">Seleccionar carpeta<input id="bankFolder" type="file" accept="image/*" webkitdirectory multiple hidden></label>
+        <button id="bankStart" class="primary" disabled>Aplicar detección</button>
+        <button id="bankCancel" disabled>Cancelar lote</button>
+        <button id="bankDownload" disabled>Descargar resultados ZIP</button>
+      </div>
+      <p id="bankStatus" role="status" aria-live="polite">Seleccione un banco de imágenes.</p>
+      <progress id="bankProgress" value="0" max="1" aria-label="Progreso del banco de imágenes" style="width:100%"></progress>
+      <p class="hint">El ZIP incluye imágenes anotadas, detecciones.csv y resultados.json, con confianza, coordenadas en píxeles y errores por archivo. No aplica persistencia temporal ni ROI. Los resultados permanecen disponibles hasta iniciar otro lote o cerrar la página.</p>
+      <img id="bankPreview" alt="Última imagen procesada con las detecciones del modelo" hidden style="max-width:100%;max-height:420px;object-fit:contain">
+    </section>
     <div class="admin-grid">
       <section class="card">
         <h3>1 · Identificación</h3>
@@ -289,7 +304,8 @@
 </main>
 
 <section id="printableReport" class="print-report" aria-hidden="true"></section>
-<script type="module" src="js/app.js?v=18"></script>
+<script type="module" src="js/app.js?v=19"></script>
 </body>
 </html>
+
 

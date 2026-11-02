@@ -1,9 +1,10 @@
-const CACHE_NAME = 'epp-guard-shell-v18';
+const CACHE_NAME = 'epp-guard-shell-v19';
 const APP_SHELL = [
   './',
   './index.html',
   './css/styles.css?v=18',
-  './js/app.js?v=18',
+  './js/app.js?v=19',
+  './js/image-bank.js?v=19',
   './manifest.webmanifest',
   './assets/icon-192.png',
   './assets/icon-512.png'
@@ -59,4 +60,5 @@ self.addEventListener('fetch', event => {
     caches.match(event.request).then(cached => cached || fetch(event.request))
   );
 });
+
 

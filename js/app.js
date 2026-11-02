@@ -1,3 +1,4 @@
+import { initImageBank } from './image-bank.js?v=19';
 await window.__ORT_READY__;
 
 const $ = id => document.getElementById(id);
@@ -12,7 +13,7 @@ const DEVICE = {
   cores: Number(navigator.hardwareConcurrency || 0)
 };
 
-const APP_VERSION = '18.0.0';
+const APP_VERSION = '19.0.0';
 const ORT_VERSION = '1.27.0';
 const DEFAULT_MODEL_KEY = 'yolo11s_dataset17';
 const VALIDATED_INPUT_SIZE = 640;
@@ -1175,6 +1176,25 @@ async function loadDefault() {
   await loadProfile(requested, { fallback: true, reason: 'manual', modelKey: selectedModelKey() });
 }
 
+initImageBank({
+  async prepare() {
+    running = false;
+    while (inferenceBusy || inferenceLoopActive || modelLoadInProgress) {
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+    stopSource(false);
+    if (!session) await loadDefault();
+    if (!session) throw new Error('No se pudo cargar el modelo. Revise la conexión y vuelva a intentar.');
+    return {
+      model: modelLabel(), inputSize: state.inputSize,
+      confidence: state.confidence, iou: state.iou,
+      classes: [...metadata.classes], roi: null,
+      temporalTracking: false
+    };
+  },
+  detect: image => infer(image)
+});
+
 function markInferenceComplete() {
   const now = performance.now();
   inferenceTimestamps.push(now);
@@ -1538,14 +1558,14 @@ function getInferenceWorkspace(size) {
   return inferenceWorkspace;
 }
 
-async function infer() {
+async function infer(image = null) {
   const totalStart = performance.now();
-  const [sourceWidth, sourceHeight] = sourceDimensions();
+  const [sourceWidth, sourceHeight] = image ? [image.width, image.height] : sourceDimensions();
   if (!sourceWidth || !sourceHeight) return [];
 
-  ensureCanvasSize(sourceWidth, sourceHeight);
+  if (!image) ensureCanvasSize(sourceWidth, sourceHeight);
 
-  const crop = roiPixels(sourceWidth, sourceHeight);
+  const crop = roiPixels(sourceWidth, sourceHeight, image ? null : state.roi);
   const size = state.inputSize || metadata.inputSize || VALIDATED_INPUT_SIZE;
   const workspace = getInferenceWorkspace(size);
   const offCtx = workspace.ctx;
@@ -1563,7 +1583,7 @@ async function infer() {
   const padY = (size - resizedHeight) / 2;
 
   offCtx.drawImage(
-    sourceObject(),
+    image || sourceObject(),
     crop.x, crop.y, crop.width, crop.height,
     padX, padY, resizedWidth, resizedHeight
   );
@@ -3373,11 +3393,17 @@ async function processCurrentFrame() {
     return;
   }
 
-  const detections = await infer();
-  lastBoxes = updateTracks(detections);
-  lastPeople = associate(lastBoxes);
-  render(lastBoxes, lastPeople);
-  updateReportStats(lastPeople);
+  if (inferenceBusy) return;
+  inferenceBusy = true;
+  try {
+    const detections = await infer();
+    lastBoxes = updateTracks(detections);
+    lastPeople = associate(lastBoxes);
+    render(lastBoxes, lastPeople);
+    updateReportStats(lastPeople);
+  } finally {
+    inferenceBusy = false;
+  }
 }
 
 function startProcessingLoops() {
@@ -4229,4 +4255,5 @@ if ('serviceWorker' in navigator) {
     });
   });
 }
+
 
